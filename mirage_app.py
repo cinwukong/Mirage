@@ -70,6 +70,46 @@ def make_icon_image(size=64):
     return img
 
 
+class SmoothScrollFrame(ctk.CTkScrollableFrame):
+    """CTkScrollableFrame with calmer scrolling.
+
+    The stock version scrolls a few pixels per wheel event and redraws each time, which on
+    Windows shows up as flicker and half-drawn, duplicated rows. This one adds up wheel movement,
+    scrolls at most ~60 times a second and forces a full redraw after each step."""
+
+    STEP = 70  # pixels per wheel notch
+
+    def _set_scroll_increments(self):
+        self._parent_canvas.configure(xscrollincrement=1, yscrollincrement=1)
+
+    def _mouse_wheel_all(self, event):
+        if not self.winfo_ismapped() or not self._check_if_valid_scroll(event.widget):
+            return
+        if self._parent_canvas.yview() == (0.0, 1.0):
+            return
+        if sys.platform == "darwin":
+            px = -event.delta * 6
+        elif sys.platform.startswith("linux"):
+            px = -self.STEP if event.num == 4 else self.STEP
+        else:
+            px = int(-event.delta / 120 * self.STEP)
+        self._wheel_pending = getattr(self, "_wheel_pending", 0) + px
+        if not getattr(self, "_wheel_job", None):
+            self._wheel_job = self.after(16, self._flush_wheel)
+
+    def _flush_wheel(self):
+        self._wheel_job = None
+        px, self._wheel_pending = self._wheel_pending, 0
+        if px:
+            self._parent_canvas.yview_scroll(px, "units")
+            self._parent_canvas.update_idletasks()
+
+
+def make_scroll_area(parent, **kw):
+    opts = dict(fg_color=BG, scrollbar_button_color=BORDER)
+    opts.update(kw)
+    return SmoothScrollFrame(parent, **opts)
+
 # --------------------------------------------------------------------------- #
 # Start with Windows (HKCU Run key)
 # --------------------------------------------------------------------------- #
@@ -242,8 +282,7 @@ class MirageApp(ctk.CTk):
                                          wraplength=600)
         self.detail_label.pack(pady=(0, 8))
 
-        self.chat = ctk.CTkScrollableFrame(page, fg_color=PANEL, corner_radius=16,
-                                           scrollbar_button_color=BORDER)
+        self.chat = make_scroll_area(page, fg_color=PANEL, corner_radius=16)
         self.chat.grid(row=1, column=0, sticky="nsew", padx=24, pady=(4, 10))
         self.empty_hint = ctk.CTkLabel(
             self.chat, text='Say "mirage" followed by a command — or type one below.\n'
@@ -386,11 +425,23 @@ class MirageApp(ctk.CTk):
         ctk.CTkLabel(head, text="Changes save automatically", text_color=MUTED,
                      font=ctk.CTkFont(FONT, 12)).pack(side="right", padx=12)
 
-        body = ctk.CTkScrollableFrame(page, fg_color=BG, scrollbar_button_color=BORDER)
-        body.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        # Settings are split into tabs so no page needs a long scroll (long scrolling lists
+        # redraw badly on Windows).
+        page.grid_rowconfigure(1, weight=0)
+        page.grid_rowconfigure(2, weight=1)
+        self.settings_tabs = ctk.CTkSegmentedButton(
+            page, values=["Microphone", "Voice", "Wake word & AI", "App"], height=34,
+            font=ctk.CTkFont(FONT, 13), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
+            unselected_color=PANEL, unselected_hover_color=PANEL_2, fg_color=PANEL,
+            command=self._show_settings_tab)
+        self.settings_tabs.grid(row=1, column=0, sticky="w", padx=24, pady=(6, 4))
+        self.settings_sections = {}
+        for name in ("Microphone", "Voice", "Wake word & AI", "App"):
+            self.settings_sections[name] = make_scroll_area(page)
         cfg = self.engine.cfg
 
         # --- Microphone ---
+        body = self.settings_sections["Microphone"]
         card = self._card(body, "Microphone", "What Mirage listens with.")
         h = self._row(card, "Input device", "Pick the mic Mirage should listen to.")
         self.mic_menu = ctk.CTkOptionMenu(h, width=260, dynamic_resizing=False, fg_color=PANEL_2,
@@ -412,6 +463,7 @@ class MirageApp(ctk.CTk):
         self.mute_switch.pack()
 
         # --- Voice ---
+        body = self.settings_sections["Voice"]
         card = self._card(body, "Voice", "How Mirage sounds when it talks back.")
         h = self._row(card, "Voice engine",
                       "Windows = built-in voices. VoiceStudio = realistic AI voices "
@@ -476,6 +528,7 @@ class MirageApp(ctk.CTk):
                           "Hello. This is how I sound.", show=False)).pack()
 
         # --- Wake word ---
+        body = self.settings_sections["Wake word & AI"]
         card = self._card(body, "Wake word", "What you say to get Mirage's attention.")
         h = self._row(card, "Wake words",
                       "Separate with commas. Add spellings it might mishear, "
@@ -520,6 +573,7 @@ class MirageApp(ctk.CTk):
         self._update_ai_status()
 
         # --- App ---
+        body = self.settings_sections["App"]
         card = self._card(body, "App")
         h = self._row(card, "Start with Windows", "Mirage starts hidden in the tray when you log in.")
         self.startup_switch = ctk.CTkSwitch(h, text="", progress_color=ACCENT_DARK, command=self._on_startup)
@@ -570,8 +624,16 @@ class MirageApp(ctk.CTk):
         h = self._row(card, "Quit Mirage", "Stops listening completely.")
         ctk.CTkButton(h, text="Quit", width=100, fg_color="#7f1d1d", hover_color="#b91c1c",
                       command=self.quit_app).pack()
-        ctk.CTkFrame(body, fg_color="transparent", height=10).pack()
+        self.settings_tabs.set("Microphone")
+        self._show_settings_tab("Microphone")
         return page
+
+    def _show_settings_tab(self, name):
+        for key, area in self.settings_sections.items():
+            if key == name:
+                area.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
+            else:
+                area.grid_forget()
 
     def _switch(self, holder, key):
         sw = ctk.CTkSwitch(holder, text="", progress_color=ACCENT_DARK)
@@ -782,7 +844,7 @@ class MirageApp(ctk.CTk):
         page.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(page, text="Shortcuts", text_color=TEXT, font=ctk.CTkFont(FONT, 24, "bold")).grid(
             row=0, column=0, sticky="w", padx=24, pady=(24, 4))
-        body = ctk.CTkScrollableFrame(page, fg_color=BG, scrollbar_button_color=BORDER)
+        body = make_scroll_area(page)
         body.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
 
         self.site_list = self._shortcut_card(
