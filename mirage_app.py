@@ -824,7 +824,10 @@ class MirageApp(ctk.CTk):
         for name, path in self.engine.skills.find_obsidian_vaults():
             self._vaults[f"{name} (Obsidian)"] = path
         cur = self.engine.cfg.get("vault_path", "")
-        if cur and cur not in self._vaults.values():
+        known = {str(Path(v)).lower(): v for v in self._vaults.values() if v}
+        if cur and str(Path(cur)).lower() in known:
+            cur = known[str(Path(cur)).lower()]
+        elif cur and cur not in self._vaults.values():
             self._vaults[Path(cur).name] = cur
         self.vault_menu.configure(values=list(self._vaults))
         self.vault_menu.set(next((k for k, v in self._vaults.items() if v == cur), "Mirage's own folder"))
@@ -837,6 +840,7 @@ class MirageApp(ctk.CTk):
         from tkinter import filedialog
         path = filedialog.askdirectory(title="Choose your Obsidian vault folder")
         if path:
+            path = str(self.engine.skills.vault_root(path))
             self.engine.update_config({"vault_path": path})
             self._refresh_vaults()
             self.add_message("system", f"Notes will be kept in: {self.engine.memory.folder}")

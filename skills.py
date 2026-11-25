@@ -140,6 +140,58 @@ def say_time(dt, now=None):
 # --------------------------------------------------------------------------- #
 # Memory: notes in an Obsidian vault (or a plain folder)
 # --------------------------------------------------------------------------- #
+def vault_root(path) -> Path:
+    """Turn whatever folder was picked into the vault's main folder.
+    Picking the hidden '.obsidian' settings folder, or a folder inside a vault, both point to the vault."""
+    p = Path(path)
+    if p.name == ".obsidian":
+        return p.parent
+    for parent in [p, *p.parents]:
+        if (parent / ".obsidian").is_dir():
+            return parent
+    return p
+
+
+def fix_vault_setting(cfg: dict, log=print) -> bool:
+    """Repair a vault path that points at '.obsidian' (or inside a vault) and move any notes that
+    were written to the wrong place. Returns True if the setting was changed."""
+    raw = (cfg.get("vault_path") or "").strip()
+    if not raw:
+        return False
+    old, root = Path(raw), vault_root(raw)
+    if root == old:
+        return False
+    wrong = old / "Mirage"
+    right = root / "Mirage"
+    if wrong.is_dir():
+        for f in wrong.rglob("*"):
+            if f.is_dir():
+                continue
+            dest = right / f.relative_to(wrong)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():  # merge: keep both, without repeating the header
+                extra = [l for l in f.read_text(encoding="utf-8", errors="ignore").splitlines()
+                         if l.startswith(("- ", "  "))]
+                with open(dest, "a", encoding="utf-8") as out:
+                    out.write("\n".join(extra) + ("\n" if extra else ""))
+                f.unlink()
+            else:
+                os.replace(f, dest)
+        for d in sorted((x for x in wrong.rglob("*") if x.is_dir()), reverse=True):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        try:
+            wrong.rmdir()
+        except OSError:
+            pass
+        log(f"Moved Mirage notes from {wrong} to {right}")
+    cfg["vault_path"] = str(root)
+    log(f"Vault setting fixed: {old} -> {root}")
+    return True
+
+
 def find_obsidian_vaults():
     """Vaults Obsidian knows about, from its own settings file. Returns [(name, path)]."""
     out = []
@@ -171,7 +223,7 @@ class Memory:
     def vault(self) -> Path:
         p = (self.get_cfg().get("vault_path") or "").strip()
         if p and Path(p).exists():
-            return Path(p)
+            return vault_root(p)
         return BASE_DIR / "memory"
 
     @property

@@ -798,6 +798,11 @@ class Engine:
         import skills
         self.skills = skills
         self.hearing = hearing
+        try:
+            if skills.fix_vault_setting(self.cfg, log):
+                save_config(self.cfg)
+        except Exception as e:
+            log(f"Couldn't repair the vault setting: {e}")
         self.memory = skills.Memory(lambda: self.cfg)
         self.reminders = skills.Reminders(self._reminder_due)
         self.whisper = hearing.Whisper(log=log)
