@@ -32,12 +32,21 @@ def install_whisper(progress=lambda msg: None) -> bool:
         python = python.with_name("python.exe")
     progress("Installing Whisper (this can take a few minutes)…")
     flags = 0x08000000 if sys.platform.startswith("win") else 0  # no console window
-    r = subprocess.run([str(python), "-m", "pip", "install", "faster-whisper"],
-                       capture_output=True, text=True, creationflags=flags)
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or ["unknown error"]
-        progress(f"Install failed: {tail[0][:160]}")
-        return False
+    pip = [str(python), "-m", "pip", "install", "--disable-pip-version-check"]
+    # faster-whisper lists onnxruntime as a requirement, but only uses it for an optional
+    # voice-detection filter that Mirage keeps off. onnxruntime doesn't exist for every Python
+    # version (e.g. 3.15), so install faster-whisper without it and add the parts it really needs.
+    steps = [
+        pip + ["ctranslate2>=4,<5", "huggingface-hub>=0.21", "tokenizers>=0.13,<1", "av>=11", "tqdm", "numpy"],
+        pip + ["--no-deps", "faster-whisper"],
+    ]
+    for cmd in steps:
+        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags)
+        if r.returncode != 0:
+            lines = [l for l in (r.stderr or r.stdout or "").strip().splitlines() if l.strip()]
+            err = next((l for l in reversed(lines) if "ERROR" in l), lines[-1] if lines else "unknown error")
+            progress(f"Install failed: {err[:200]}")
+            return False
     ok = whisper_installed()
     progress("Whisper installed." if ok else "Installed, but Mirage can't load it yet. Restart Mirage.")
     return ok
