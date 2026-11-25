@@ -35,7 +35,7 @@ SAMPLE_RATE = 16000
 INSTANCE_PORT = 47613
 
 # Updates come from this GitHub repository ("owner/name"). Can be changed in config.json.
-UPDATE_REPO = "cinwukong/mirage"
+UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
 KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip"}
@@ -961,13 +961,27 @@ GITHUB_TOKEN = ""  # set from config by the app/engine
 
 
 def _github_get(url: str, timeout=15, accept="application/vnd.github+json") -> bytes:
+    """GET from GitHub. Uses the saved key if there is one; if GitHub rejects it, tries again
+    without it (works for public repositories)."""
+    import urllib.error
     import urllib.request
-    headers = {"User-Agent": "Mirage-updater", "Accept": accept}
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+
+    def fetch(with_key):
+        headers = {"User-Agent": "Mirage-updater", "Accept": accept}
+        if with_key:
+            headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
+            return r.read()
+
+    if not GITHUB_TOKEN:
+        return fetch(False)
+    try:
+        return fetch(True)
+    except urllib.error.HTTPError as e:
+        if e.code not in (401, 403, 404):
+            raise
+        log(f"GitHub rejected the saved key (HTTP {e.code}); trying without it.")
+        return fetch(False)
 
 
 def update_repo(cfg: dict) -> str:
@@ -985,8 +999,8 @@ def check_for_update(repo: str):
     except urllib.error.HTTPError as e:
         if e.code in (401, 403, 404):
             if not GITHUB_TOKEN:
-                return None, False, "The Mirage repo is private: paste your GitHub key below first."
-            return None, False, "GitHub refused the key. Check it can read cinwukong/mirage and hasn't expired."
+                return None, False, "Can't see the Mirage repo. If it's private, paste your GitHub key below."
+            return None, False, f"GitHub refused the key (error {e.code}). Clear it and paste it again."
         return None, False, f"Couldn't check GitHub (error {e.code})."
     except Exception as e:
         return None, False, f"Couldn't reach GitHub ({e.__class__.__name__})."

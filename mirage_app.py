@@ -135,6 +135,9 @@ class MirageApp(ctk.CTk):
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        # Make Ctrl+A select everything in text boxes (Tk's default jumps to the start instead)
+        self.bind_class("Entry", "<Control-a>", self._select_all)
+        self.bind_class("Entry", "<Control-A>", self._select_all)
         self._build_sidebar()
         self.content = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
         self.content.grid(row=0, column=1, sticky="nsew")
@@ -156,6 +159,12 @@ class MirageApp(ctk.CTk):
             self.after(4000, self._check_updates)
         if start_hidden and self.tray:
             self.withdraw()
+
+    @staticmethod
+    def _select_all(event):
+        event.widget.select_range(0, "end")
+        event.widget.icursor("end")
+        return "break"
 
     # ------------------------------------------------------------------ #
     # Window chrome
@@ -332,7 +341,7 @@ class MirageApp(ctk.CTk):
     def _card(self, parent, title, subtitle=""):
         card = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=16)
         card.pack(fill="x", padx=24, pady=8)
-        card.grid_columnconfigure(0, weight=1)
+        card.grid_columnconfigure(0, weight=1, minsize=290)
         ctk.CTkLabel(card, text=title, text_color=TEXT, font=ctk.CTkFont(FONT, 16, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(16, 0 if subtitle else 8))
         if subtitle:
@@ -384,7 +393,7 @@ class MirageApp(ctk.CTk):
         # --- Microphone ---
         card = self._card(body, "Microphone", "What Mirage listens with.")
         h = self._row(card, "Input device", "Pick the mic Mirage should listen to.")
-        self.mic_menu = ctk.CTkOptionMenu(h, width=300, dynamic_resizing=False, fg_color=PANEL_2,
+        self.mic_menu = ctk.CTkOptionMenu(h, width=260, dynamic_resizing=False, fg_color=PANEL_2,
                                           button_color=BORDER, button_hover_color=ACCENT_DARK,
                                           command=self._on_mic_change)
         self.mic_menu.pack(side="left")
@@ -393,7 +402,7 @@ class MirageApp(ctk.CTk):
         self._refresh_mics()
 
         h = self._row(card, "Input level", "Talk — the bar should move.")
-        self.level_bar = ctk.CTkProgressBar(h, width=344, height=12, progress_color=ACCENT, fg_color=PANEL_2)
+        self.level_bar = ctk.CTkProgressBar(h, width=300, height=12, progress_color=ACCENT, fg_color=PANEL_2)
         self.level_bar.set(0)
         self.level_bar.pack()
 
@@ -414,7 +423,7 @@ class MirageApp(ctk.CTk):
         self.engine_switch.pack()
 
         h = self._row(card, "Windows voice")
-        self.voice_menu = ctk.CTkOptionMenu(h, width=300, dynamic_resizing=False, values=["Loading voices…"],
+        self.voice_menu = ctk.CTkOptionMenu(h, width=260, dynamic_resizing=False, values=["Loading voices…"],
                                             fg_color=PANEL_2, button_color=BORDER,
                                             button_hover_color=ACCENT_DARK, command=self._on_voice_change)
         self.voice_menu.pack()
@@ -422,7 +431,7 @@ class MirageApp(ctk.CTk):
 
         h = self._row(card, "VoiceStudio voice",
                       "Voices you clone or design in VoiceStudio show up here. Press ↻ after adding one.")
-        self.vs_menu = ctk.CTkOptionMenu(h, width=300, dynamic_resizing=False, values=["(checking…)"],
+        self.vs_menu = ctk.CTkOptionMenu(h, width=260, dynamic_resizing=False, values=["(checking…)"],
                                          fg_color=PANEL_2, button_color=BORDER,
                                          button_hover_color=ACCENT_DARK, command=self._on_vs_voice_change)
         self.vs_menu.pack(side="left")
@@ -430,7 +439,7 @@ class MirageApp(ctk.CTk):
                       command=self._check_voicestudio).pack(side="left", padx=(8, 0))
 
         h = self._row(card, "VoiceStudio connection")
-        self.vs_status = ctk.CTkLabel(h, text="", font=ctk.CTkFont(FONT, 13), wraplength=330, justify="right")
+        self.vs_status = ctk.CTkLabel(h, text="", font=ctk.CTkFont(FONT, 13), wraplength=180, justify="right")
         self.vs_status.pack(side="left")
         ctk.CTkButton(h, text="Get VoiceStudio", width=120, fg_color=PANEL_2, hover_color=BORDER,
                       command=lambda: webbrowser.open("https://github.com/debpalash/VoiceStudio/releases/latest")
@@ -471,7 +480,7 @@ class MirageApp(ctk.CTk):
         h = self._row(card, "Wake words",
                       "Separate with commas. Add spellings it might mishear, "
                       "remove ones that trigger by accident.")
-        self.wake_entry = ctk.CTkEntry(h, width=340, fg_color=PANEL_2, border_color=BORDER)
+        self.wake_entry = ctk.CTkEntry(h, width=300, fg_color=PANEL_2, border_color=BORDER)
         self.wake_entry.insert(0, ", ".join(cfg["wake_words"]))
         self.wake_entry.pack()
         self.wake_entry.bind("<Return>", lambda e: self._save_wake())
@@ -495,7 +504,7 @@ class MirageApp(ctk.CTk):
         card = self._card(body, "AI brain (optional)",
                           "With an Anthropic API key Mirage can answer questions and understand free-form requests.")
         h = self._row(card, "API key", "Pay-per-use. Short voice replies cost very little.")
-        self.key_entry = ctk.CTkEntry(h, width=300, show="•", fg_color=PANEL_2, border_color=BORDER,
+        self.key_entry = ctk.CTkEntry(h, width=230, show="•", fg_color=PANEL_2, border_color=BORDER,
                                       placeholder_text="sk-ant-…")
         if cfg.get("anthropic_api_key"):
             self.key_entry.insert(0, cfg["anthropic_api_key"])
@@ -526,31 +535,36 @@ class MirageApp(ctk.CTk):
         self._switch(h, "close_to_tray")
 
         h = self._row(card, "Updates", f"You have version {M.VERSION}.")
-        self.update_status = ctk.CTkLabel(h, text="", text_color=MUTED, font=ctk.CTkFont(FONT, 12),
-                                          wraplength=260, justify="right")
-        self.update_status.pack(side="left", padx=(0, 8))
         self.update_btn = ctk.CTkButton(h, text="Check for updates", width=150, fg_color=ACCENT_DARK,
                                         hover_color=ACCENT, command=self._on_update_button)
-        self.update_btn.pack(side="left")
+        self.update_btn.pack(anchor="e")
+        self.update_status = ctk.CTkLabel(h, text="", text_color=MUTED, font=ctk.CTkFont(FONT, 12),
+                                          wraplength=280, justify="right")
+        self.update_status.pack(anchor="e")
         self._latest_version = None
 
-        h = self._row(card, "GitHub key", "Needed because the Mirage repo is private. A read-only key "
-                                          "for just the mirage repo is enough.")
-        self.gh_entry = ctk.CTkEntry(h, width=240, show="•", fg_color=PANEL_2, border_color=BORDER,
+        h = self._row(card, "GitHub key", "Only needed if the Mirage repo is private. "
+                                          "Leave empty for a public repo.")
+        self.gh_entry = ctk.CTkEntry(h, width=120, show="•", fg_color=PANEL_2, border_color=BORDER,
                                      placeholder_text="github_pat_…")
         if cfg.get("github_token"):
             self.gh_entry.insert(0, cfg["github_token"])
         self.gh_entry.pack(side="left")
         self.gh_entry.bind("<Return>", lambda e: self._save_gh_token())
         self.gh_entry.bind("<FocusOut>", lambda e: self._save_gh_token())
-        ctk.CTkButton(h, text="Create key", width=90, fg_color=PANEL_2, hover_color=BORDER,
+        ctk.CTkButton(h, text="Paste", width=54, fg_color=PANEL_2, hover_color=BORDER,
+                      command=self._paste_gh_token).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(h, text="Clear", width=54, fg_color=PANEL_2, hover_color=BORDER,
+                      command=lambda: (self.gh_entry.delete(0, "end"), self._save_gh_token())
+                      ).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(h, text="Create", width=64, fg_color=PANEL_2, hover_color=BORDER,
                       command=lambda: webbrowser.open("https://github.com/settings/personal-access-tokens/new")
                       ).pack(side="left", padx=(8, 0))
 
         h = self._row(card, "Files")
         ctk.CTkButton(h, text="Open log", width=100, fg_color=PANEL_2, hover_color=BORDER,
                       command=lambda: self._open_path(M.LOG_PATH)).pack(side="left")
-        ctk.CTkButton(h, text="Open Mirage folder", width=140, fg_color=PANEL_2, hover_color=BORDER,
+        ctk.CTkButton(h, text="Open folder", width=100, fg_color=PANEL_2, hover_color=BORDER,
                       command=lambda: self._open_path(M.BASE_DIR)).pack(side="left", padx=(8, 0))
 
         h = self._row(card, "Quit Mirage", "Stops listening completely.")
@@ -704,6 +718,15 @@ class MirageApp(ctk.CTk):
             self.update_btn.configure(text="Check for updates")
             if not quiet:
                 self.update_status.configure(text="✓ You're up to date.", text_color="#34d399")
+
+    def _paste_gh_token(self):
+        try:
+            text = self.clipboard_get().strip()
+        except tk.TclError:
+            text = ""
+        self.gh_entry.delete(0, "end")
+        self.gh_entry.insert(0, text)
+        self._save_gh_token()
 
     def _save_gh_token(self):
         token = self.gh_entry.get().strip()
