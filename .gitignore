@@ -1,0 +1,9 @@
+# Local to each computer - never commit these
+config.json
+model/
+model.zip
+mirage.log
+mirage.ico
+__pycache__/
+*.tmp
+*.new
