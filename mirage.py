@@ -39,7 +39,7 @@ UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
 KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
-                  "memory", "reminders.json"}
+                  "memory", "reminders.json", ".webview"}
 
 
 def read_version() -> str:
@@ -100,6 +100,10 @@ DEFAULT_CONFIG = {
     "weather_location": None,            # filled in automatically from weather_city
     "music_service": "youtube",          # what "play ..." uses: youtube or spotify
     "roblox_games": {},                  # name -> .rbxl file path or place id
+    "brain": "claude_code",              # "claude_code", "api" or "off"
+    "claude_model": "haiku",             # haiku (fast), sonnet (balanced), opus (smartest)
+    "claude_power": False,               # let Claude Code run commands and edit files
+    "voice_commands": [],                # your own shortcuts: {"phrase", "action", "target"}
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
     "update_repo": "",             # "" = use UPDATE_REPO
@@ -590,186 +594,6 @@ def describe_duration(s: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Optional AI brain (Claude)
-# --------------------------------------------------------------------------- #
-class Brain:
-    TOOLS = [
-        {"name": "open_website", "description": "Open a website by name or URL.",
-         "input_schema": {"type": "object", "properties": {"site": {"type": "string"}}, "required": ["site"]}},
-        {"name": "open_app", "description": "Open an application on the computer.",
-         "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
-        {"name": "google", "description": "Open a Google search in the browser for the user.",
-         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-        {"name": "youtube", "description": "Search YouTube / play a video or song.",
-         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-        {"name": "media", "description": "Media/volume control.",
-         "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": [
-             "volume up", "volume down", "mute", "pause", "play", "next", "previous"]}}, "required": ["action"]}},
-        {"name": "set_timer", "description": "Set a short countdown timer.",
-         "input_schema": {"type": "object", "properties": {"seconds": {"type": "integer"},
-                                                           "label": {"type": "string"}}, "required": ["seconds"]}},
-        {"name": "set_reminder", "description": "Set a reminder that survives restarts. Give the time as "
-                                                "ISO 8601 local time (YYYY-MM-DDTHH:MM).",
-         "input_schema": {"type": "object", "properties": {"when": {"type": "string"}, "text": {"type": "string"}},
-                          "required": ["when", "text"]}},
-        {"name": "remember", "description": "Save a fact about the user to long-term memory (their notes).",
-         "input_schema": {"type": "object", "properties": {"fact": {"type": "string"}}, "required": ["fact"]}},
-        {"name": "search_notes", "description": "Search the user's notes (Obsidian vault) and memory.",
-         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-        {"name": "add_todo", "description": "Add an item to the user's to-do list.",
-         "input_schema": {"type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"]}},
-        {"name": "list_todos", "description": "Get the user's open to-do items.",
-         "input_schema": {"type": "object", "properties": {}}},
-        {"name": "get_weather", "description": "Current weather and forecast for the user's city.",
-         "input_schema": {"type": "object", "properties": {"day": {"type": "string", "enum": ["today", "tomorrow"]}}}},
-        {"name": "look_at_screen", "description": "Take a screenshot of the user's screen to see what they see.",
-         "input_schema": {"type": "object", "properties": {}}},
-        {"name": "screenshot", "description": "Save a screenshot to the user's Pictures folder.",
-         "input_schema": {"type": "object", "properties": {}}},
-        {"name": "type_text", "description": "Type text with the keyboard into the focused window.",
-         "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
-    ]
-
-    def __init__(self, engine: "Engine"):
-        self.engine = engine
-        self.client = None
-        self.history: list = []
-        self.reload()
-
-    def reload(self):
-        cfg = self.engine.cfg
-        key = cfg.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
-        self.client = None
-        if key:
-            try:
-                import anthropic
-                self.client = anthropic.Anthropic(api_key=key)
-                log("AI brain enabled.")
-            except Exception as e:
-                log(f"AI brain unavailable: {e}")
-
-    def _system(self, text):
-        eng = self.engine
-        sk = eng.skills
-        mem_lines = [sk.clean_md(l) for l in eng.memory.memory_lines(40)]
-        notes = eng.memory.search(text, 6)
-        todos = eng.memory.todos()[:15]
-        parts = [
-            "You are Mirage, a voice assistant running on the user's Windows computer, like JARVIS. "
-            "Your replies are spoken aloud and shown as subtitles, so keep them short (1-3 sentences), "
-            "conversational, and never use markdown, lists or emojis. "
-            f"The current time is {datetime.now():%A %Y-%m-%d %H:%M}. "
-            "Use the tools when the user wants something done or when you need information. "
-            "When the user tells you something about themselves worth keeping, save it with remember. "
-            "The input may come from speech recognition and contain mis-heard words; interpret it sensibly."
-        ]
-        if mem_lines:
-            parts.append("Things the user asked you to remember:\n" + "\n".join(f"- {l}" for l in mem_lines))
-        if notes:
-            parts.append("Possibly relevant lines from the user's notes:\n"
-                         + "\n".join(f"- [{n}] {sk.clean_md(l)}" for n, l in notes))
-        if todos:
-            parts.append("Open to-do items: " + "; ".join(todos))
-        return "\n\n".join(parts)
-
-    def _screen_block(self):
-        import base64
-        import io
-        import pyautogui
-        img = pyautogui.screenshot()
-        img.thumbnail((1400, 1400))
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=80)
-        return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                            "data": base64.b64encode(buf.getvalue()).decode()}}
-
-    def ask(self, text: str, screen: bool = False) -> str:
-        if not self.client:
-            return "Sorry, I don't know how to do that yet. Add an API key in settings to make me smarter."
-        content = [{"type": "text", "text": text}]
-        if screen:
-            try:
-                content.insert(0, self._screen_block())
-            except Exception as e:
-                log(f"Screenshot failed: {e}")
-        history = [m for m in self.history[-10:]]
-        while history and history[0]["role"] != "user":
-            history.pop(0)
-        messages = history + [{"role": "user", "content": content}]
-        system = self._system(text)
-        spoken = []
-        try:
-            for _ in range(5):  # let the model use tools and read their results
-                resp = self.client.messages.create(
-                    model=self.engine.cfg.get("anthropic_model") or "claude-haiku-5-5",
-                    max_tokens=400, system=system, tools=self.TOOLS, messages=messages)
-                spoken = [b.text for b in resp.content if b.type == "text"]
-                uses = [b for b in resp.content if b.type == "tool_use"]
-                if not uses:
-                    break
-                messages.append({"role": "assistant", "content": resp.content})
-                results = []
-                for b in uses:
-                    out = self.run_tool(b.name, b.input or {})
-                    results.append({"type": "tool_result", "tool_use_id": b.id,
-                                    "content": out if isinstance(out, list) else str(out or "done")})
-                messages.append({"role": "user", "content": results})
-        except Exception as e:
-            log(f"AI error: {e}")
-            return "I couldn't reach my brain right now."
-        reply = " ".join(spoken).strip() or "Done."
-        self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
-        self.history = self.history[-12:]
-        return reply
-
-    def run_tool(self, name: str, args: dict):
-        eng = self.engine
-        a, sk = eng.actions, eng.skills
-        log(f"AI tool: {name} {args}")
-        try:
-            if name == "open_website":
-                return a.open_website(args["site"]) or a.google(args["site"])
-            if name == "open_app":
-                return a.open_app(args["name"])
-            if name == "google":
-                return a.google(args["query"])
-            if name == "youtube":
-                return a.youtube(args["query"])
-            if name == "media":
-                return a.media(args["action"]) or "done"
-            if name == "set_timer":
-                return a.set_timer(int(args["seconds"]), args.get("label", ""))
-            if name == "set_reminder":
-                when = datetime.fromisoformat(args["when"])
-                eng.reminders.add(when, args["text"])
-                eng.emit("reminders_changed")
-                return f"Reminder set {sk.say_time(when)}."
-            if name == "remember":
-                eng.memory.remember(args["fact"])
-                return "Saved."
-            if name == "search_notes":
-                hits = eng.memory.search(args["query"], 8)
-                return "\n".join(f"[{n}] {sk.clean_md(l)}" for n, l in hits) or "Nothing found."
-            if name == "add_todo":
-                eng.memory.add_todo(args["item"])
-                return "Added."
-            if name == "list_todos":
-                return "; ".join(eng.memory.todos()) or "The to-do list is empty."
-            if name == "get_weather":
-                return sk.weather_report(eng.cfg, args.get("day", "today"))
-            if name == "look_at_screen":
-                return [self._screen_block(), {"type": "text", "text": "This is the user's screen right now."}]
-            if name == "screenshot":
-                return a.screenshot()
-            if name == "type_text":
-                return a.type_text(args["text"]) or "typed"
-            return f"Unknown tool {name}"
-        except Exception as e:
-            log(f"Tool {name} failed: {e}")
-            return f"That failed: {e}"
-
-
-# --------------------------------------------------------------------------- #
 # The engine
 # --------------------------------------------------------------------------- #
 class Engine:
@@ -811,9 +635,15 @@ class Engine:
             self.whisper.load_async(self.cfg.get("whisper_model", "base.en"))
         self.voice = Voice(self)
         self.actions = Actions(self)
-        self.brain = Brain(self)
+        import brains
+        self.brains = {"claude_code": brains.ClaudeCodeBrain(self), "api": brains.ApiBrain(self),
+                       "off": brains.OffBrain()}
 
     # ---- events / status ----
+    @property
+    def brain(self):
+        return self.brains.get(self.cfg.get("brain", "claude_code"), self.brains["off"])
+
     def emit(self, kind, data=None):
         for fn in self._listeners:
             try:
@@ -872,7 +702,9 @@ class Engine:
         if "input_device" in changes and changes["input_device"] != old.get("input_device"):
             self._restart_audio.set()
         if "anthropic_api_key" in changes or "anthropic_model" in changes:
-            self.brain.reload()
+            self.brains["api"].reload()
+        if "claude_model" in changes or "claude_power" in changes:
+            threading.Thread(target=self.brains["claude_code"].reset, daemon=True).start()
         if self.cfg.get("hearing") == "whisper" and ("hearing" in changes or "whisper_model" in changes):
             if self.hearing.whisper_installed():
                 self.whisper.load_async(self.cfg.get("whisper_model", "base.en"),
@@ -1016,6 +848,56 @@ class Engine:
                 self.awaiting_until = 0
                 self.cmd_q.put(("audio", pcm, text, False) if self._whisper_on() else text)
 
+    def play(self, query, service=None):
+        """Play something on YouTube or Spotify (the music setting decides unless told)."""
+        service = (service or self.cfg.get("music_service") or "youtube").lower()
+        if service == "spotify":
+            try:
+                if SYSTEM == "Windows":
+                    os.startfile("spotify:search:" + urllib.parse.quote(query))
+                else:
+                    webbrowser.open("https://open.spotify.com/search/" + urllib.parse.quote(query))
+                return f"Here's {query} on Spotify."
+            except Exception:
+                return "I couldn't open Spotify."
+        return self.actions.youtube(query)
+
+    def run_voice_command(self, cmd):
+        """Run one of the user's own shortcuts. Returns what to say."""
+        action, target = cmd.get("action", "open"), (cmd.get("target") or "").strip()
+        a = self.actions
+        if action == "say":
+            return target
+        if action == "type":
+            return a.type_text(target)
+        if action == "keys":
+            try:
+                import pyautogui
+                keys = [k.strip().lower() for k in re.split(r"[+ ]+", target) if k.strip()]
+                pyautogui.hotkey(*keys) if len(keys) > 1 else pyautogui.press(keys[0])
+                return ""
+            except Exception as e:
+                return f"I couldn't press those keys: {e}"
+        if action == "run":
+            try:
+                subprocess.Popen(target, shell=True, cwd=str(Path.home()))
+                return "Done."
+            except Exception as e:
+                return f"That didn't run: {e}"
+        # open: website, app, file, folder or link
+        if re.match(r"^https?://", target) or re.match(r"^[\w.-]+\.[a-z]{2,}(/|$)", target):
+            webbrowser.open(target if target.startswith("http") else "https://" + target)
+            return "Opening it."
+        try:
+            if SYSTEM == "Windows":
+                os.startfile(target) if (Path(target).exists() or ":" in target) else \
+                    subprocess.Popen(f'start "" "{target}"', shell=True)
+            else:
+                subprocess.Popen(["xdg-open", target])
+            return "Opening it."
+        except Exception as e:
+            return f"I couldn't open that: {e}"
+
     def _reminder_due(self, r):
         log(f"Reminder due: {r['text']}")
         beep(); beep()
@@ -1048,6 +930,11 @@ class Engine:
         sk, mem = self.skills, self.memory
 
         # ---- memory ----
+        for cmd in self.cfg.get("voice_commands") or []:
+            phrase = re.sub(r"[^\w\s']", "", (cmd.get("phrase") or "").lower()).strip()
+            if phrase and re.sub(r"[^\w\s']", "", text).strip() == phrase:
+                return say(self.run_voice_command(cmd))
+
         m = re.match(r"^(?:please )?(?:remember|don'?t forget|note) (?:that )?(.+)$", text)
         if m and not text.startswith("remember to remind"):
             mem.remember(m.group(1))
@@ -1063,7 +950,7 @@ class Engine:
                      r"search (?:in )?my notes (?:for|about)|search notes for|look in my notes for|"
                      r"find (?:in )?my notes(?: about)?|check my notes (?:for|about)) (.+)$", text)
         if m:
-            if self.brain.client:
+            if self.brain.available():
                 return say(self.brain.ask(text))
             hits = mem.search(m.group(1), 3)
             if not hits:
@@ -1114,7 +1001,7 @@ class Engine:
         # ---- screen ----
         if re.search(r"\b(?:what'?s|what is) on (?:my|the) screen\b|\blook at (?:my|the|this) screen\b|"
                      r"\bwhat am i looking at\b|\b(?:read|check|see) (?:my|the) screen\b|\bon my screen\b", text):
-            if not self.brain.client:
+            if not self.brain.available():
                 return say("I need my AI brain to look at your screen. Add an API key in settings.")
             return say(self.brain.ask(text, screen=True))
 
@@ -1136,22 +1023,9 @@ class Engine:
             return say(sk.studio_key("ctrl", "s") or "Saved.")
 
         # ---- music ----
-        m = re.match(r"^play (.+?) on spotify$", text)
-        if m or (re.match(r"^(?:play|put on) (.+)$", text) and self.cfg.get("music_service") == "spotify"
-                 and not text.startswith(("play test", "playtest"))):
-            q = (m or re.match(r"^(?:play|put on) (.+)$", text)).group(1)
-            q = re.sub(r" on spotify$", "", q)
-            uri = "spotify:search:" + urllib.parse.quote(q)
-            try:
-                os.startfile(uri) if SYSTEM == "Windows" else webbrowser.open(
-                    "https://open.spotify.com/search/" + urllib.parse.quote(q))
-                return say(f"Here's {q} on Spotify.")
-            except Exception:
-                return say("I couldn't open Spotify.")
-
-        m = re.match(r"^(?:play|put on) (.+?)(?: on youtube)?$", text)
-        if m and m.group(1) not in ("music",):
-            return say(a.youtube(m.group(1)))
+        m = re.match(r"^(?:play|put on) (.+?)(?: on (youtube|spotify))?$", text)
+        if m and m.group(1) not in ("music",) and not text.startswith(("play test", "playtest")):
+            return say(self.play(m.group(1), m.group(2)))
         m = re.match(r"^(?:search youtube for|youtube) (.+)$", text) or re.match(r"^search (?:for )?(.+) on youtube$", text)
         if m:
             return say(a.youtube(m.group(1)))
@@ -1201,7 +1075,7 @@ class Engine:
 
         m = re.match(r"^(?:who|what) (?:is|was|are|were) (?:a |an |the )?(.+)$", text) or \
             re.match(r"^(?:tell me about|what do you know about) (.+)$", text)
-        if m and not self.brain.client:
+        if m and not self.brain.available():
             try:
                 fact = sk.wiki_summary(m.group(1))
                 if fact:

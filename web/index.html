@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mirage</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="logo.png">
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Main">
+    <img class="rail-logo" src="logo.png" alt="Mirage">
+    <button class="nav" data-page="home" aria-label="Home">
+      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="5"/><circle cx="12" cy="12" r="2.2"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="nav" data-page="memory" aria-label="Memory">
+      <svg viewBox="0 0 24 24"><path d="M6 4h9l3 3v13H6z"/><path d="M9 10h6M9 14h6M9 18h3"/></svg>
+      <span>Memory</span>
+    </button>
+    <button class="nav" data-page="shortcuts" aria-label="Shortcuts">
+      <svg viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>
+      <span>Shortcuts</span>
+    </button>
+    <button class="nav" data-page="settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
+      <span>Settings</span>
+    </button>
+    <div class="rail-spacer"></div>
+    <button class="mic" id="micBtn" aria-label="Mute microphone" title="Mute microphone">
+      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4l16 16"/></svg>
+    </button>
+  </nav>
+
+  <main class="stage">
+    <header class="topbar">
+      <div class="status" id="status"><span class="dot"></span><span id="statusText">Starting up…</span></div>
+      <div class="detail" id="statusDetail"></div>
+    </header>
+
+    <!-- Home -->
+    <section class="page" id="page-home">
+      <div class="holo-wrap"><canvas id="holo" width="640" height="300"></canvas></div>
+      <div class="convo" id="convo" aria-live="polite"></div>
+      <div class="ask">
+        <input id="askInput" type="text" placeholder="Ask Mirage anything, or type a command" autocomplete="off">
+        <button class="btn gold" id="askSend">Send</button>
+      </div>
+    </section>
+
+    <!-- Memory -->
+    <section class="page" id="page-memory">
+      <div class="page-head">
+        <h1>Memory</h1>
+        <div class="head-actions">
+          <span class="muted" id="vaultName"></span>
+          <button class="btn" data-act="open_vault">Open in Obsidian</button>
+        </div>
+      </div>
+      <div class="seg" id="memTabs" role="tablist">
+        <button data-tab="memories" class="on">Things I remember</button>
+        <button data-tab="todos">To-do</button>
+        <button data-tab="reminders">Reminders</button>
+      </div>
+      <div class="adder" id="memAdder">
+        <input id="memInput" type="text" autocomplete="off">
+        <button class="btn gold" id="memAdd">Add</button>
+      </div>
+      <ul class="list" id="memList"></ul>
+    </section>
+
+    <!-- Shortcuts -->
+    <section class="page" id="page-shortcuts">
+      <div class="page-head"><h1>Shortcuts</h1></div>
+      <p class="lede">Shortcuts run instantly and never use Claude. Say “mirage” and then the phrase.</p>
+      <div id="shortcutBlocks"></div>
+    </section>
+
+    <!-- Settings -->
+    <section class="page" id="page-settings">
+      <div class="page-head"><h1>Settings</h1><span class="saved" id="saved"></span></div>
+      <div class="settings">
+        <aside class="sublist" id="settingsNav"></aside>
+        <div class="panel" id="settingsPanel"></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

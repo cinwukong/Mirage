@@ -1,45 +1,37 @@
-# Mirage — your voice assistant
+# Mirage
 
-Mirage listens for its name in the background. Say **"mirage"** and then a command.
-Speech recognition is fully offline, so your audio never leaves your computer.
+A voice assistant for Windows, in the spirit of JARVIS. Say **"mirage"**, then what you want.
 
-## The app
-Double-click **start_mirage.bat** to open the app (`mirage_app.py`).
-- **Home**: an animated orb that reacts to your voice, plus a chat of everything you and Mirage have said. You can also type commands.
-- **Settings**: microphone choice with a live level meter, mute, voice, speed, volume, wake words, beep, AI key, start with Windows, and quit.
-- **Shortcuts**: add your own websites and apps ("mirage open <name>"), plus a list of things you can say.
+- **Shortcuts first.** Opening apps and websites, timers, reminders, your to-do list, notes, weather,
+  media keys and Roblox Studio are handled by Mirage itself: instant, offline and free.
+- **Claude Code for everything else.** Questions and bigger tasks go to Claude Code, using your Claude
+  account. It can use Mirage's skills, search the web, read files and (if you allow it) run commands.
+- **Memory in Obsidian.** What you ask Mirage to remember becomes linked notes in your vault, so it
+  shows up as a web in Obsidian's graph.
+- **A hologram in the corner.** The purple headband appears while Mirage listens, thinks and speaks,
+  with optional subtitles.
 
-Closing the window keeps Mirage running in the **tray** (the icons in the bottom-right of the taskbar).
-Click the tray icon to open it again, or right-click it to mute or quit. You can also say "mirage show yourself".
+## Install
+1. Install Python 3.9 or newer from python.org (tick "Add python.exe to PATH").
+2. Download this repository and double-click `install.bat`.
+3. In Mirage, open **Settings → Brain** and click **Install Claude Code**, then **Log in**.
 
-## Updating
-Go to **Settings → App → Check for updates**. If there's a new version, click **Install** and Mirage
-downloads it from GitHub and restarts itself. Your settings (`config.json`) and the speech model are
-never touched. Mirage also checks quietly each time it starts and tells you in the chat when an update is out.
+After that, `start_mirage.bat` opens Mirage, and **Settings → App → Start with Windows** starts it
+hidden in the tray when you log in. Updates install from **Settings → App → Check for updates**.
+
+## Pages
+- **Home**: the hologram, your conversation, and a box to type to Mirage.
+- **Memory**: things Mirage remembers, your to-do list and reminders. Add, tick off or delete.
+- **Shortcuts**: your own voice commands ("mirage good morning" → open Spotify), plus websites,
+  apps and Roblox games Mirage can open.
+- **Settings**: brain, listening (microphone, wake words, Whisper), voice (Windows or VoiceStudio),
+  hologram, memory (Obsidian vault), skills (weather city, music) and app options.
 
 ## Files
-- `install.bat`: installs everything and opens the app
-- `start_mirage.bat`: opens the app, or brings it forward if it's already running
-- `stop_mirage.bat`: force-stops Mirage
-- `add_to_startup.bat`: starts Mirage with Windows. The same setting is in Settings > App.
-- `mirage.log`: everything Mirage heard and did. Look here when something doesn't work.
-
-## Memory (Obsidian)
-In **Settings → Memory**, pick your Obsidian vault. Mirage writes to a `Mirage` folder inside it:
-`Memory.md` (things you ask it to remember), `To-do.md`, and optional daily logs. When answering,
-Mirage also searches the rest of your vault. Everything is plain notes you can edit or delete.
-
-## Accurate hearing (Whisper)
-In **Settings → Microphone**, click **Install Whisper**, then choose **Accurate**. Mirage still listens
-for "mirage" with the fast recognizer, but your commands are transcribed by Whisper (offline).
-
-## Things you can say
-"mirage open youtube", "mirage play lofi music", "mirage search …", "mirage set a timer for 10 minutes",
-"mirage what time is it", "mirage volume up / mute / pause / next song", "mirage take a screenshot",
-"mirage type …", "mirage lock my computer", "mirage close window", "mirage mute microphone",
-"mirage show yourself", "mirage shut down" (stops Mirage, not your PC),
-"mirage remember that …", "mirage what do you know about …", "mirage add … to my to-do list",
-"mirage remind me at 5 pm to …", "mirage what's the weather", "mirage who is …",
-"mirage what's on my screen" (needs the AI brain), "mirage playtest" / "stop playtest" (Roblox Studio).
-
-With an Anthropic API key (Settings > AI brain), Mirage can also answer questions and understand free-form requests.
+- `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
+- `ui_web.py` + `web/`: the window and interface
+- `mirage.py`: listening, speaking and the built-in shortcuts
+- `brains.py`: Claude Code and API-key brains, and the skills they can use
+- `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio
+- `hearing.py`: Whisper; `hologram.py`: the corner hologram
+- `config.json`, `memory/`, `reminders.json`, `model/` are kept on your PC and never uploaded.

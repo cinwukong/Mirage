@@ -5,7 +5,9 @@ see-through background and lets mouse clicks pass through it.
 """
 
 import math
+import queue
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -15,13 +17,13 @@ LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
 KEY = "#010203"  # this exact colour becomes fully transparent on Windows
 
 COLORS = {
-    "awaiting": "#34d399",
-    "thinking": "#a78bfa",
-    "speaking": "#22d3ee",
-    "listening": "#22d3ee",
-    "loading": "#94a3b8",
-    "muted": "#64748b",
-    "error": "#f87171",
+    "awaiting": "#f2d17e",   # gold: listening for your command
+    "thinking": "#d9a93f",   # deep gold, spinning faster
+    "speaking": "#c9b2ff",   # lavender
+    "listening": "#b794ff",
+    "loading": "#9d8db5",
+    "muted": "#6b5a80",
+    "error": "#e2574c",
 }
 ACTIVE = ("awaiting", "thinking", "speaking")
 SIZES = {"small": 150, "medium": 210, "large": 290}
@@ -387,3 +389,42 @@ class Hologram:
         r3 = r * 0.30
         c.create_oval(cx - r3 - r * 0.18, cy - r3 - r * 0.2, cx + r3 - r * 0.18, cy + r3 - r * 0.2,
                       outline="", fill=_mix(color, "#ffffff", 0.75))
+
+
+class HologramThread:
+    """Runs the hologram in its own thread with its own Tk, so it works next to any main window.
+    Call methods by name: holo.call("set_status", "thinking")."""
+
+    def __init__(self, get_cfg):
+        self.get_cfg = get_cfg
+        self.q = queue.Queue()
+        self.ready = threading.Event()
+        threading.Thread(target=self._run, daemon=True, name="mirage-hologram").start()
+
+    def _run(self):
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            holo = Hologram(root, self.get_cfg)
+        except Exception as e:
+            print(f"Hologram unavailable: {e}")
+            return
+        self.ready.set()
+
+        def pump():
+            for _ in range(200):
+                try:
+                    fn, args = self.q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    getattr(holo, fn)(*args)
+                except Exception as e:
+                    print(f"Hologram {fn} failed: {e}")
+            root.after(30, pump)
+
+        pump()
+        root.mainloop()
+
+    def call(self, fn, *args):
+        self.q.put((fn, args))

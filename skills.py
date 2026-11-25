@@ -497,6 +497,50 @@ class Memory:
         return [clean_md(l) for l in self.todo_file.read_text(encoding="utf-8").splitlines()
                 if l.strip().lower().startswith(mark)]
 
+    def todo_entries(self):
+        """[(line_index, text, done)] for every to-do item."""
+        if not self.todo_file.exists():
+            return []
+        out = []
+        for i, l in enumerate(self.todo_file.read_text(encoding="utf-8").splitlines()):
+            s = l.strip().lower()
+            if s.startswith("- [ ]") or s.startswith("- [x]"):
+                out.append((i, clean_md(l), s.startswith("- [x]")))
+        return out
+
+    def _edit_todo_line(self, index, fn):
+        with self.lock:
+            lines = self.todo_file.read_text(encoding="utf-8").splitlines()
+            if 0 <= index < len(lines):
+                new = fn(lines[index])
+                if new is None:
+                    del lines[index]
+                else:
+                    lines[index] = new
+                self.todo_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._index = None
+
+    def toggle_todo(self, index):
+        def flip(l):
+            return l.replace("- [ ]", "- [x]", 1) if "- [ ]" in l else re.sub(r"- \[[xX]\]", "- [ ]", l, count=1)
+        self._edit_todo_line(index, flip)
+
+    def delete_todo(self, index):
+        self._edit_todo_line(index, lambda l: None)
+
+    def delete_memory_line(self, line: str):
+        f = self.folder / "Memory.md"
+        if not f.exists():
+            return False
+        with self.lock:
+            lines = f.read_text(encoding="utf-8").splitlines()
+            if line not in lines:
+                return False
+            lines.remove(line)
+            f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._index = None
+        return True
+
     def complete_todo(self, words: str):
         keys = [w for w in re.findall(r"[a-z0-9']+", words.lower()) if w not in STOPWORDS]
         if not self.todo_file.exists() or not keys:
