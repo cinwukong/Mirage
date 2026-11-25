@@ -130,7 +130,7 @@ class Bridge:
         e.set_muted(not e.mic_muted)
 
     def test_voice(self):
-        self._app.engine.voice.say("Hello. This is how I sound.", show=False)
+        self._app.engine.voice.say("Hello. This is how I sound.", show=False, force=True)
 
     # ---- Mirage's own voice ----
     def install_mirage_voice(self):
@@ -143,7 +143,8 @@ class Bridge:
             import voice_local
             lv._set("installing", "Starting…")
             try:
-                ok, msg = voice_local.install(lambda m: (setattr(lv, "detail", m), a.push("progress", ["mvState", m, "wait"])))
+                ok, msg = voice_local.install(lambda m: (setattr(lv, "detail", m), a.push("progress", ["mvState", m, "wait"])),
+                                              log=M.log)
             except Exception as e:
                 ok, msg = False, f"Install failed: {e}"
             lv._set("off" if ok else "error", msg)
@@ -202,7 +203,7 @@ class Bridge:
                 raise ValueError("Pick a recording first.")
             v = e.local_voice.clone_save(path, name, transcript)
             e.update_config({"mirage_voice": v["id"]})
-            e.voice.say(f"This is {v['name']}.", show=False)
+            e.voice.say(f"This is {v['name']}.", show=False, force=True)
             return v
         self._mv_job("mvCloneState", go, lambda v: f"Saved “{v['name']}” and switched to it.")
 
@@ -214,7 +215,7 @@ class Bridge:
             v = vl.import_voicestudio(vs_id)
             e.local_voice.forget(v["id"])
             e.update_config({"mirage_voice": v["id"]})
-            e.voice.say(f"This is {v['name']}.", show=False)
+            e.voice.say(f"This is {v['name']}.", show=False, force=True)
             return v
         self._mv_job("mvImportState", go, lambda v: f"Brought over “{v['name']}” and switched to it.")
 
@@ -239,6 +240,13 @@ class Bridge:
         e = self._app.engine
         e.local_voice.load_async(then=e.voice_loaded)
 
+    def mv_use_gpu(self):
+        """Close Mirage, swap PyTorch for the graphics card version in a console window, start again."""
+        flags = 0x00000010 if M.SYSTEM == "Windows" else 0  # its own console window, so the download shows
+        subprocess.Popen([str(python_console()), str(M.BASE_DIR / "voice_local.py"), "--gpu", str(os.getpid())],
+                         cwd=str(M.BASE_DIR), creationflags=flags)
+        threading.Thread(target=self._app.quit, daemon=True).start()
+
     def mv_play(self, vid):
         e = self._app.engine
         v = e.voice_local.get_voice(vid)
@@ -251,6 +259,9 @@ class Bridge:
                 e.local_voice.speak(f"Hello. This is {v['name']}.", v, speed, e.cfg.get("mirage_voice_quality", "balanced"),
                                     float(e.cfg.get("voice_volume", 1.0)))
             except Exception as err:
+                M.log(f"Playing voice {vid} failed: {err}")
+                e.local_voice.last_error = f"{type(err).__name__}: {err}"
+                self._app.push("state", {"mv": self._app.mv_state()})
                 self._app.push("toast", f"Couldn't play it: {err}")
         threading.Thread(target=work, daemon=True).start()
 
@@ -568,7 +579,7 @@ class App:
                 pass
         elif kind == "mirage_voice":
             if getattr(self, "engine", None) is not None:  # not while the engine is still starting
-                self.push("state", {"mv": self.mv_state()})
+                self.push("state", {"mv": self.mv_state(), "cfg": self.cfg_view()})
             return
         elif kind == "whisper_status":
             ok, msg = data

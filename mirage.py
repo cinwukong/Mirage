@@ -432,19 +432,21 @@ class Voice:
             return True
         except Exception as e:
             log(f"Built-in voice failed: {e}")
+            lv.last_error = f"{type(e).__name__}: {e}"
             if not self._lv_warned:
                 self._lv_warned = True
                 engine.emit("system", f"My voice had a problem ({e}), so I'm using the Windows voice for now.")
             return False
 
-    def say(self, text: str, show: bool = True):
+    def say(self, text: str, show: bool = True, force: bool = False):
+        """force: speak even when replies are set to subtitles only (for "play a test sentence")."""
         if not text:
             return
         log(f"MIRAGE: {text}")
         if show:
             self.engine._last_reply = text
             self.engine.emit("reply", text)
-        if self.engine.cfg.get("speak_replies", True):
+        if force or self.engine.cfg.get("speak_replies", True):
             self.speaking.set()
             self.q.put(text)
 

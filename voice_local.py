@@ -27,9 +27,14 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_ID = "k2-fsa/OmniVoice"
-MODEL_DIR = BASE_DIR / "voice_model"
 VOICES_DIR = BASE_DIR / "voices"
-MODEL_DONE = MODEL_DIR / ".mirage-complete"
+OLD_MODEL_DIR = BASE_DIR / "voice_model"   # where 2.1.0 kept it
+# The 3.3 GB model lives outside Mirage's folder, which may be on a synced desktop (OneDrive)
+if sys.platform.startswith("win") and os.environ.get("LOCALAPPDATA"):
+    MODEL_DIR = Path(os.environ["LOCALAPPDATA"]) / "Mirage" / "voice_model"
+else:
+    MODEL_DIR = OLD_MODEL_DIR
+DONE = ".mirage-complete"
 MODEL_BYTES = 3.27e9
 OMNIVOICE_VERSION = "0.2.1"
 SAMPLE_RATE = 24000
@@ -38,6 +43,8 @@ QUALITY_STEPS = {"fast": 12, "balanced": 20, "best": 32}
 NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 # PyTorch builds for NVIDIA cards, newest first, with the CUDA version the driver must support
 CUDA_BUILDS = [("cu132", 13.2), ("cu130", 13.0), ("cu128", 12.8), ("cu126", 12.6)]
+if sys.version_info >= (3, 15):  # PyTorch only makes builds for this Python with CUDA 13
+    CUDA_BUILDS = [b for b in CUDA_BUILDS if b[1] >= 13.0]
 TORCH_DEPS = ["filelock", "fsspec", "jinja2", "markupsafe", "networkx", "sympy", "mpmath",
               "typing-extensions", "setuptools"]
 
@@ -93,15 +100,54 @@ def packages_installed() -> bool:
 
 
 def model_downloaded() -> bool:
-    return MODEL_DONE.exists() and (MODEL_DIR / "model.safetensors").exists()
+    return (MODEL_DIR / DONE).exists() and (MODEL_DIR / "model.safetensors").exists()
+
+
+def migrate_model(log=print):
+    """Move a model downloaded by Mirage 2.1.0 out of Mirage's own folder."""
+    global MODEL_DIR
+    if MODEL_DIR == OLD_MODEL_DIR or not (OLD_MODEL_DIR / DONE).exists():
+        return
+    try:
+        if (MODEL_DIR / DONE).exists():
+            shutil.rmtree(OLD_MODEL_DIR, ignore_errors=True)
+            return
+        MODEL_DIR.parent.mkdir(parents=True, exist_ok=True)
+        if MODEL_DIR.exists():
+            shutil.rmtree(MODEL_DIR)
+        # a rename only (instant on the same drive); never a half-finished copy. The Mirage that is
+        # closing may still hold the files for a moment, so try a few times.
+        for attempt in range(5):
+            try:
+                os.rename(OLD_MODEL_DIR, MODEL_DIR)
+                break
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(1.5)
+        log(f"Moved the voice model to {MODEL_DIR}")
+    except Exception as e:
+        log(f"Couldn't move the voice model ({e}); using it where it is.")
+        MODEL_DIR = OLD_MODEL_DIR
 
 
 def installed() -> bool:
     return packages_installed() and model_downloaded()
 
 
-def nvidia_info():
+_nvidia_cache = None
+
+
+def nvidia_info(cached=False):
     """(highest CUDA version the driver supports, card name), or (None, "") without an NVIDIA card."""
+    global _nvidia_cache
+    if cached and _nvidia_cache is not None:
+        return _nvidia_cache
+    _nvidia_cache = _nvidia_query()
+    return _nvidia_cache
+
+
+def _nvidia_query():
     exe = shutil.which("nvidia-smi")
     if not exe and sys.platform.startswith("win"):
         guess = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
@@ -116,6 +162,41 @@ def nvidia_info():
         return (float(m.group(1)) if m else None), (name[0].strip() if name else "")
     except Exception:
         return None, ""
+
+
+def cuda_build_for(driver_cuda):
+    """The newest PyTorch graphics-card build this driver can run, or None."""
+    for tag, need in CUDA_BUILDS:
+        if driver_cuda is not None and driver_cuda + 1e-6 >= need:
+            return tag
+    return None
+
+
+def gpu_report(torch=None):
+    """Why the voice does or doesn't run on the graphics card, in plain words."""
+    driver_cuda, gpu = nvidia_info(cached=True)
+    rep = {"nvidia": bool(gpu or driver_cuda), "gpu": gpu, "driver_cuda": driver_cuda, "torch": "", "torch_cuda": "",
+           "using_gpu": False, "can_switch": False, "reason": ""}
+    if torch is not None:
+        rep["torch"] = torch.__version__
+        rep["torch_cuda"] = getattr(torch.version, "cuda", None) or ""
+        rep["using_gpu"] = bool(torch.cuda.is_available())
+    if rep["using_gpu"]:
+        return rep
+    if not rep["nvidia"]:
+        rep["reason"] = "No NVIDIA graphics card was found, so the voice runs on the processor."
+    elif not cuda_build_for(driver_cuda):
+        need = min(b[1] for b in CUDA_BUILDS)
+        rep["reason"] = (f"Your NVIDIA driver is too old for the graphics card version of PyTorch (it supports CUDA "
+                         f"{driver_cuda or 'unknown'}, and {need} or newer is needed). Update the driver in the NVIDIA app, "
+                         "then come back here.")
+    elif torch is not None and not rep["torch_cuda"]:
+        rep["reason"] = f"PyTorch was installed without graphics card support. Switch to use your {gpu or 'NVIDIA card'}."
+        rep["can_switch"] = True
+    elif torch is not None:
+        rep["reason"] = "PyTorch has graphics card support but can't reach the card. Restarting the PC usually fixes this."
+        rep["can_switch"] = True
+    return rep
 
 
 def torch_info():
@@ -167,7 +248,7 @@ def _pip(args, progress, label):
     return False, "pip failed"
 
 
-def install(progress=lambda msg: None):
+def install(progress=lambda msg: None, log=lambda msg: None):
     """Install everything the built-in voice needs. Returns (ok, message)."""
     free = shutil.disk_usage(BASE_DIR).free
     if free < 8e9:
@@ -176,6 +257,8 @@ def install(progress=lambda msg: None):
     progress("Checking your graphics card…")
     cuda, gpu = nvidia_info()
     have, have_cuda = torch_info()
+    log(f"Voice install: NVIDIA card {gpu or 'not found'} (driver CUDA {cuda}); PyTorch {have or 'not installed'}"
+        f"{' with' if have_cuda else ' without'} graphics card support; Python {sys.version.split()[0]}")
 
     if not have or (cuda and not have_cuda):
         if have:  # a version without graphics card support is installed; swap it out
@@ -192,11 +275,13 @@ def install(progress=lambda msg: None):
                 progress(f"Installing PyTorch for your {gpu or 'NVIDIA card'} (about 3 GB)…")
                 done, err = _pip(["torch", "--index-url", f"https://download.pytorch.org/whl/{tag}"],
                                  progress, "PyTorch")
+                log(f"Voice install: PyTorch {tag} " + ("installed" if done else f"failed: {err}"))
                 if done:
                     break
         if not done:
             progress("Installing PyTorch (about 250 MB)…")
             ok, err = _pip(["torch"], progress, "PyTorch")
+            log("Voice install: PyTorch for the processor " + ("installed" if ok else f"failed: {err}"))
             if not ok:
                 return False, f"Install failed: {err}"
 
@@ -205,6 +290,7 @@ def install(progress=lambda msg: None):
     if sys.version_info >= (3, 13):
         pkgs.append("audioop-lts")  # pydub needs audioop, which newer Pythons no longer include
     ok, err = _pip(pkgs, progress, "Voice engine")
+    log("Voice install: packages " + ("installed" if ok else f"failed: {err}"))
     if ok:
         # OmniVoice also lists packages for its demo website and for training; Mirage needs neither
         ok, err = _pip(["--no-deps", f"omnivoice=={OMNIVOICE_VERSION}"], progress, "Voice engine")
@@ -243,7 +329,7 @@ def _folder_size(path: Path) -> int:
 
 def download_model(progress=lambda msg: None):
     """Download the voice model into Mirage's folder. Returns (ok, message)."""
-    MODEL_DIR.mkdir(exist_ok=True)
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
     code = ("import sys; from huggingface_hub import snapshot_download; "
             "snapshot_download(sys.argv[1], local_dir=sys.argv[2])")
     # plain downloads (not Xet) so the files grow steadily and the progress shown is real
@@ -267,7 +353,7 @@ def download_model(progress=lambda msg: None):
         lines = [l.strip() for l in out if l.strip()]
         err = next((l for l in reversed(lines) if "Error" in l), lines[-1] if lines else "unknown error")
         return False, f"The voice model didn't download: {err[:200]}"
-    MODEL_DONE.write_text(time.strftime("%Y-%m-%d %H:%M"))
+    (MODEL_DIR / DONE).write_text(time.strftime("%Y-%m-%d %H:%M"))
     return True, "Voice model downloaded."
 
 
@@ -626,6 +712,9 @@ class LocalVoice:
         self._cache = {}
         self._preview = None
         self._loader = None
+        self.last_error = ""
+        self.gpu_info = None
+        migrate_model(log)
 
     # ---- status ----
     def ready(self):
@@ -633,7 +722,8 @@ class LocalVoice:
 
     def status(self):
         return {"installed": installed(), "packages": packages_installed(), "model": model_downloaded(),
-                "state": self.state, "detail": self.detail, "gpu": self.gpu}
+                "state": self.state, "detail": self.detail, "gpu": self.gpu, "gpu_info": self.gpu_info,
+                "last_error": self.last_error}
 
     def _set(self, state, detail=""):
         self.state, self.detail = state, detail
@@ -662,7 +752,10 @@ class LocalVoice:
             if torch.cuda.is_available():
                 device, dtype, where = "cuda:0", torch.float16, "your graphics card (" + torch.cuda.get_device_name(0) + ")"
             else:
-                device, dtype, where = "cpu", torch.float32, "the processor - Fast quality is quickest"
+                device, dtype, where = "cpu", torch.float32, "the processor"
+            self.gpu_info = gpu_report(torch)
+            self.log(f"Voice: PyTorch {self.gpu_info['torch']} (CUDA build {self.gpu_info['torch_cuda'] or 'none'}), "
+                     f"NVIDIA {self.gpu_info['gpu'] or 'none'} driver CUDA {self.gpu_info['driver_cuda']}")
             t0 = time.time()
             model = OmniVoice.from_pretrained(str(MODEL_DIR), device_map=device, dtype=dtype)
             model.eval()
@@ -676,6 +769,7 @@ class LocalVoice:
                 then()
         except Exception as e:
             self.log("Voice model failed to load:\n" + traceback.format_exc())
+            self.last_error = f"{type(e).__name__}: {e}"
             self._set("error", f"Couldn't load the voice model: {e}")
 
     def unload(self):
@@ -774,6 +868,7 @@ class LocalVoice:
                 _play_blocking(audio, sr)
         if playing:
             sd.wait()
+        self.last_error = ""
 
     # ---- designing, cloning, importing ----
     def design_preview(self, instruct, seed=None, play=True):
@@ -842,3 +937,70 @@ def play_audio(audio, sr):
         sd.wait()
     except Exception:
         _play_blocking(audio, sr)
+
+
+# --------------------------------------------------------------------------- #
+# Switching PyTorch to the graphics card version (runs in its own window while Mirage is closed,
+# because Windows won't let PyTorch's files be replaced while Mirage has them open)
+# --------------------------------------------------------------------------- #
+def _pid_alive(pid):
+    if sys.platform.startswith("win"):
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))  # query-only access
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return code.value == 259  # still running
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def switch_to_gpu(wait_pid=None):
+    print("Mirage: switching the voice to your graphics card.\n")
+    if wait_pid:
+        print("Waiting for Mirage to close…")
+        for _ in range(120):
+            if not _pid_alive(wait_pid):
+                break
+            time.sleep(0.5)
+    cuda, gpu = nvidia_info()
+    tag = cuda_build_for(cuda)
+    py = _python()
+    if not tag:
+        print(f"Your NVIDIA driver supports CUDA {cuda}; 13.0 or newer is needed. Update the driver, then try again.")
+    else:
+        subprocess.run([py, "-m", "pip", "uninstall", "-y", "torch"])
+        ok = False
+        for t, need in CUDA_BUILDS:
+            if cuda + 1e-6 < need:
+                continue
+            print(f"\nDownloading PyTorch for your {gpu or 'NVIDIA card'} ({t}, about 3 GB)…")
+            r = subprocess.run([py, "-m", "pip", "install", "--disable-pip-version-check", "torch",
+                                "--index-url", f"https://download.pytorch.org/whl/{t}"])
+            if r.returncode == 0:
+                ok = True
+                break
+        if not ok:
+            print("\nCouldn't get the graphics card version, so the processor version goes back on.")
+            subprocess.run([py, "-m", "pip", "install", "--disable-pip-version-check", "torch"])
+    ver, has_gpu = torch_info()
+    print(f"\nPyTorch {ver}: " + ("the voice now runs on your graphics card." if has_gpu else "the voice runs on the processor."))
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+    flags = 0x00000008 | 0x00000200 if sys.platform.startswith("win") else 0
+    subprocess.Popen([str(pyw if pyw.exists() else sys.executable), str(BASE_DIR / "mirage_app.py"), "--restarted"],
+                     cwd=str(BASE_DIR), creationflags=flags, close_fds=True)
+    print("Starting Mirage again…")
+    if has_gpu:
+        time.sleep(4)
+    else:
+        input("\nPress Enter to close this window.")
+
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--gpu":
+    switch_to_gpu(sys.argv[2] if len(sys.argv) > 2 else None)

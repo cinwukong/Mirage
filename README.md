@@ -43,4 +43,5 @@ open. Click **Install** once: it downloads PyTorch for your graphics card and th
 - `brains.py`: Claude Code and API-key brains, and the skills they can use
 - `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio
 - `hearing.py`: Whisper; `hologram.py`: the corner hologram; `voice_local.py`: Mirage's own voice
-- `config.json`, `memory/`, `reminders.json`, `model/`, `voices/`, `voice_model/` are kept on your PC and never uploaded.
+- `config.json`, `memory/`, `reminders.json`, `model/` and `voices/` are kept on your PC and never uploaded.
+  The voice model is stored in `%LOCALAPPDATA%\Mirage\voice_model`, outside the Mirage folder.

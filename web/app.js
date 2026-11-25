@@ -421,6 +421,10 @@ const SECTIONS = [
       C().voice_engine === "windows" && custom("Windows voice", "", () => [selectEl(S.options.voices, C().voice_id || "", v => setCfg({ voice_id: v }).then(() => api().test_voice()), [["", "System default"]])]),
       C().voice_engine === "voicestudio" && custom("VoiceStudio voice", "Voices you design or clone in VoiceStudio appear here.", vsCtl),
       C().voice_engine === "mirage" && custom("Built-in voice", mvInstalled() ? "" : "Runs on this PC with no other apps. Installing downloads PyTorch and the voice model, about 6 GB.", mvCtl),
+      C().voice_engine === "mirage" && mvInstalled() && S.mv.gpu_info && !S.mv.gpu_info.using_gpu && custom("Graphics card", S.mv.gpu_info.reason,
+        () => S.mv.gpu_info.can_switch ? [lab.confirmGpu
+          ? btn("Restart Mirage and download (about 3 GB)", () => api().mv_use_gpu(), "gold")
+          : btn("Use graphics card", () => { lab.confirmGpu = true; renderSettings(); })] : []),
       C().voice_engine === "mirage" && mvInstalled() && (S.mv.voices || []).length > 0 && custom("Speaking voice", "Make and manage voices below.", () => [
         selectEl(S.mv.voices.map(v => [v.id, v.name]), C().mirage_voice || "", v => setCfg({ mirage_voice: v }, true).then(() => api().test_voice()))]),
       C().voice_engine === "mirage" && mvInstalled() && seg("mirage_voice_quality", "Quality", "Best sounds most natural. Fast starts talking soonest.",
@@ -477,6 +481,8 @@ function renderSettings() {
   p.append(h("h2", {}, sec.name));
   if (sec.intro) p.append(h("p", { class: "intro" }, sec.intro));
   for (const r of sec.rows()) if (r) p.append(r);
+  if (sec.id === "voice" && C().voice_engine === "mirage" && S.mv && S.mv.last_error)
+    p.append(h("div", { class: "note" }, "Last voice problem: " + S.mv.last_error));
   if (sec.id === "voice" && C().voice_engine === "mirage" && mvInstalled()) p.append(voiceLab());
   if (sec.id === "brain" && C().brain === "claude_code")
     p.append(h("div", { class: "note" }, "Shortcuts stay free: anything Mirage can do by itself (apps, websites, timers, reminders, to-dos, notes, weather, media keys, Roblox Studio) never reaches Claude. Add your own under Shortcuts."));
@@ -560,7 +566,7 @@ function vsCtl() {
 
 /* Mirage's own voice */
 const lab = { gender: "male", age: "young adult", pitch: "low pitch", accent: "", whisper: false, name: "", previewed: false,
-              file: null, cloneName: "", transcript: "", confirmDelete: null };
+              file: null, cloneName: "", transcript: "", confirmDelete: null, confirmGpu: false };
 const mvInstalled = () => !!(S.mv && S.mv.installed);
 function mvCtl() {
   const m = S.mv || {};
