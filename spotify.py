@@ -181,6 +181,7 @@ def open_and_play(uri: str) -> str:
         import webbrowser
         webbrowser.open("https://open.spotify.com/" + "/".join(uri.split(":")[1:3]))
         return "Opened it in Spotify."
+    before = _user32().GetForegroundWindow()
     os.startfile(uri)
     if not _wait_until(running, 15):
         return "Spotify didn't open."
@@ -199,12 +200,14 @@ def open_and_play(uri: str) -> str:
         return "I opened it in Spotify, but couldn't find the play button. Press play there."
     was = now_playing()
     _click(*spot)
-    if _wait_until(lambda: playing() and now_playing() != was, 4):
-        return ""
-    if not playing():  # that playlist was already playing and the click paused it
+    ok = _wait_until(lambda: playing() and now_playing() != was, 4)
+    if not ok and not playing():  # that playlist was already playing and the click paused it
         _click(*spot)
         time.sleep(0.8)
-    return "" if playing() else "I opened it in Spotify, but it didn't start. Press play there."
+        ok = playing()
+    if ok and before and before != hwnd:
+        u.ShowWindow(hwnd, 6)  # tuck Spotify away so you're back where you were (your game, Studio…)
+    return "" if ok else "I opened it in Spotify, but it didn't start. Press play there."
 
 
 def search(query: str) -> str:
