@@ -212,6 +212,45 @@ def find_obsidian_vaults():
     return out
 
 
+MIRAGE_NOTES = {"memory", "to-do", "mirage", "me"}
+_BAD_FILENAME = re.compile(r'[\\/:*?"<>|#^\[\]]')
+_SUBJECT_VERBS = r"(?: is | are | was | were | has | have | had | will | should | needs | need | uses | " \
+                 r"means | likes | loves | hates | wants | lives | works | goes | starts | ends | costs )"
+
+
+def topic_title(phrase: str) -> str:
+    words = [w for w in re.split(r"\s+", _BAD_FILENAME.sub(" ", phrase).strip()) if w]
+    small = {"of", "the", "and", "a", "an", "in", "on", "to", "for"}
+    return " ".join(w if (i and w in small) else (w[:1].upper() + w[1:]) for i, w in enumerate(words))
+
+
+def fact_subject(fact: str, known=None):
+    """Who/what a remembered fact is about: 'Me' for facts about the user, a topic title, or None.
+    known: {lowercase title: Title} of notes that already exist; those win when they're mentioned."""
+    f = fact.lower().strip()
+    if re.match(r"^(?:my|i|i'm|im|i've|me|mine)\b", f):
+        return "Me"
+    m = re.match(r"^(?:the |a |an |our )?(.{3,60}?)" + _SUBJECT_VERBS, f + " ")
+    if not m:
+        return None
+    subj = m.group(1).strip(" ,")
+    if subj.endswith("'s") or subj.endswith("’s"):
+        subj = subj[:-2]
+    # an existing note mentioned in the subject wins ("the conductor of bullet train" -> Bullet Train)
+    for low in sorted(known or {}, key=len, reverse=True):
+        if re.search(r"(?<!\w)" + re.escape(low) + r"(?!\w)", subj):
+            return known[low]
+    # "the boss of limbless" -> "limbless"
+    m2 = re.search(r"\b(?:of|in|on|from|for|at)\s+(?:the\s+)?(.+)$", subj)
+    if m2:
+        subj = m2.group(1)
+    words = subj.split()
+    if 1 <= len(words) <= 3 and not all(w in STOPWORDS for w in words) \
+            and words[0] not in ("it", "this", "that", "they", "he", "she", "there", "we", "you"):
+        return topic_title(subj)
+    return None
+
+
 class Memory:
     def __init__(self, get_cfg):
         self.get_cfg = get_cfg
@@ -244,14 +283,127 @@ class Memory:
                 f.write(line + "\n")
         self._index = None
 
+    # ---- links between notes (so Obsidian's graph shows a web) ----
+    def _hub(self):
+        hub = self.folder / "Mirage.md"
+        if not hub.exists():
+            hub.write_text("# Mirage\n\nEverything Mirage keeps for you:\n\n- [[Memory]]: things you asked it to remember\n"
+                           "- [[To-do]]: your to-do list\n- [[Me]]: what Mirage knows about you\n"
+                           "- Topics: one note per thing you talk about (folder `Topics`)\n"
+                           "- Daily: a log for each day (if turned on)\n", encoding="utf-8")
+
+    def _titles(self):
+        """Note titles in the vault that Mirage can link to: {lowercase: Title}."""
+        titles = {}
+        for note, _, _ in self._build_index():
+            low = note.lower()
+            if len(low) >= 3 and low not in MIRAGE_NOTES and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", low) \
+                    and not all(w in STOPWORDS for w in low.split()):
+                titles.setdefault(low, note)
+        topics = self.folder / "Topics"
+        if topics.is_dir():
+            for f in topics.glob("*.md"):
+                titles.setdefault(f.stem.lower(), f.stem)
+        for name in self.get_cfg().get("roblox_games", {}) or {}:
+            titles.setdefault(name.lower(), topic_title(name))
+        return titles
+
+    def link_text(self, text: str, extra=()):
+        """Wrap mentions of known notes in [[links]]. Returns (text, [linked titles])."""
+        titles = self._titles()
+        for t in extra:
+            titles.setdefault(t.lower(), t)
+        linked, out = [], text
+        for low in sorted(titles, key=len, reverse=True):
+            if len(linked) >= 6:
+                break
+            title = titles[low]
+            pat = re.compile(r"(?<![\w'])" + re.escape(low) + r"(?![\w])", re.IGNORECASE)
+            parts = re.split(r"(\[\[.*?\]\])", out)  # odd items are existing links: leave them alone
+            for i in range(0, len(parts), 2):
+                m = pat.search(parts[i])
+                if m:
+                    phrase = m.group(0)
+                    link = f"[[{title}]]" if phrase == title else f"[[{title}|{phrase}]]"
+                    parts[i] = parts[i][:m.start()] + link + parts[i][m.end():]
+                    linked.append(title)
+                    break
+            out = "".join(parts)
+        return out, linked
+
+    def _topic_note(self, title: str) -> Path:
+        """The note for a topic: an existing vault note with that title, or one Mirage creates."""
+        for note, _, _ in self._build_index():
+            if note.lower() == title.lower() and not (self.folder / "Topics" / f"{note}.md").exists():
+                return None  # the user's own note: link to it, but don't write into it
+        f = self.folder / "Topics" / f"{title}.md"
+        if not f.exists():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            intro = "What Mirage knows about you." if title == "Me" else f"What Mirage knows about {title}."
+            f.write_text(f"# {title}\n\n{intro} Part of [[Mirage]] · see also [[Memory]].\n\n", encoding="utf-8")
+            self._index = None
+        return f
+
     # ---- remember / recall ----
     def remember(self, fact: str):
         fact = fact.strip().rstrip(".")
         if not fact:
             return False
-        self._append(self.folder / "Memory.md", f"- {datetime.now():%Y-%m-%d %H:%M} — {fact}",
-                     "# Mirage memory\nThings you asked Mirage to remember. Edit or delete freely.\n\n")
+        self._hub()
+        subject = fact_subject(fact, self._titles())
+        extra = [subject] if subject and subject != "Me" else []
+        for t in extra:
+            self._topic_note(t)
+        text, linked = self.link_text(fact, extra)
+        if subject == "Me":
+            self._topic_note("Me")
+            text += " · [[Me]]"
+            linked.append("Me")
+        stamp = f"{datetime.now():%Y-%m-%d %H:%M}"
+        self._append(self.folder / "Memory.md", f"- {stamp} — {text}",
+                     "# Mirage memory\nThings you asked Mirage to remember. Part of [[Mirage]]. "
+                     "Edit or delete freely.\n\n")
+        self._file_under_topics(stamp, text, linked)
         return True
+
+    def _file_under_topics(self, stamp, text, linked):
+        for title in dict.fromkeys(linked):
+            note = self._topic_note(title)
+            if note is not None:
+                line = text.replace(" · [[Me]]", "") if title == "Me" else text
+                self._append(note, f"- {stamp} — {line} (from [[Memory]])", "")
+
+    def relink(self):
+        """Add links to memories saved before linking existed. Returns how many lines got links."""
+        f = self.folder / "Memory.md"
+        if not f.exists():
+            return 0
+        self._hub()
+        changed = 0
+        lines = f.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            m = re.match(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — (.+)$", line)
+            if not m or "[[" in line:
+                continue
+            stamp, fact = m.groups()
+            subject = fact_subject(fact, self._titles())
+            extra = [subject] if subject and subject != "Me" else []
+            for t in extra:
+                self._topic_note(t)
+            text, linked = self.link_text(fact, extra)
+            if subject == "Me":
+                self._topic_note("Me")
+                text += " · [[Me]]"
+                linked.append("Me")
+            if linked:
+                lines[i] = f"- {stamp} — {text}"
+                self._file_under_topics(stamp, text, linked)
+                changed += 1
+        if changed:
+            with self.lock:
+                f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self._index = None
+        return changed
 
     def memory_lines(self, limit=60):
         f = self.folder / "Memory.md"
@@ -333,14 +485,16 @@ class Memory:
     def add_todo(self, item: str):
         item = item.strip().rstrip(".")
         if item:
-            self._append(self.todo_file, f"- [ ] {item}", "# To-do\n\n")
+            self._hub()
+            linked_item, _ = self.link_text(item)
+            self._append(self.todo_file, f"- [ ] {linked_item}", "# To-do\n\nPart of [[Mirage]].\n\n")
         return bool(item)
 
     def todos(self, done=False):
         if not self.todo_file.exists():
             return []
         mark = "- [x]" if done else "- [ ]"
-        return [l.strip()[6:].strip() for l in self.todo_file.read_text(encoding="utf-8").splitlines()
+        return [clean_md(l) for l in self.todo_file.read_text(encoding="utf-8").splitlines()
                 if l.strip().lower().startswith(mark)]
 
     def complete_todo(self, words: str):
@@ -352,7 +506,8 @@ class Memory:
             best, best_hits = None, 0
             for i, l in enumerate(lines):
                 if l.strip().startswith("- [ ]"):
-                    hits = sum(k in l.lower() for k in keys)
+                    plain = clean_md(l).lower()
+                    hits = sum(k in plain for k in keys)
                     if hits > best_hits:
                         best, best_hits = i, hits
             if best is None or best_hits < max(1, len(keys) // 2):
@@ -360,7 +515,7 @@ class Memory:
             lines[best] = lines[best].replace("- [ ]", "- [x]", 1)
             self.todo_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self._index = None
-        return lines[best].strip()[6:].strip()
+        return clean_md(lines[best])
 
     # ---- daily log ----
     def log_exchange(self, you: str, mirage: str):
@@ -369,13 +524,17 @@ class Memory:
         day = self.folder / "Daily"
         day.mkdir(exist_ok=True)
         f = day / f"{datetime.now():%Y-%m-%d}.md"
-        line = f"- {datetime.now():%H:%M} **You:** {you}" + (f"\n  **Mirage:** {mirage}" if mirage else "")
-        self._append(f, line, f"# Mirage log {datetime.now():%Y-%m-%d}\n\n")
+        you_l, _ = self.link_text(you)
+        line = f"- {datetime.now():%H:%M} **You:** {you_l}" + (f"\n  **Mirage:** {mirage}" if mirage else "")
+        self._hub()
+        self._append(f, line, f"# Mirage log {datetime.now():%Y-%m-%d}\n\nPart of [[Mirage]].\n\n")
 
 
 def clean_md(line: str) -> str:
     """Turn a markdown line into something nice to read aloud."""
-    s = re.sub(r"^\s*[-*+]\s+(\[[ xX]\]\s*)?", "", line)
+    s = re.sub(r"\s*·\s*\[\[Me\]\]", "", line)
+    s = re.sub(r"\s*\(from \[\[Memory\]\]\)", "", s)
+    s = re.sub(r"^\s*[-*+]\s+(\[[ xX]\]\s*)?", "", s)
     s = re.sub(r"^#+\s*", "", s)
     s = re.sub(r"\[\[([^\]|]+)\|?([^\]]*)\]\]", lambda m: m.group(2) or m.group(1), s)
     s = re.sub(r"[*_`>]", "", s)

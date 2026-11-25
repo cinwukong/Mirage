@@ -626,7 +626,8 @@ class MirageApp(ctk.CTk):
 
         # --- Memory ---
         body = self.settings_sections["Memory"]
-        card = self._card(body, "Memory", "Mirage keeps what you tell it as notes, so you can read and edit them.")
+        card = self._card(body, "Memory", "Mirage keeps what you tell it as linked notes, so they show up "
+                                          "as a web in Obsidian's graph.")
         h = self._row(card, "Where to keep notes",
                       "Pick your Obsidian vault, and Mirage writes to a \"Mirage\" folder inside it.")
         self.vault_menu = ctk.CTkOptionMenu(h, width=200, dynamic_resizing=False, fg_color=PANEL_2,
@@ -643,6 +644,9 @@ class MirageApp(ctk.CTk):
                       command=lambda: self._open_path(self.engine.memory.folder)).pack(side="left", padx=(8, 0))
         h = self._row(card, "Daily log", "Writes what you and Mirage said into a note for each day.")
         self._switch(h, "daily_log")
+        h = self._row(card, "Links for the graph", "Adds [[links]] to memories saved before Mirage linked them.")
+        ctk.CTkButton(h, text="Link old memories", width=140, fg_color=PANEL_2, hover_color=BORDER,
+                      command=self._relink).pack()
         tip = ctk.CTkLabel(card, text='Try: "mirage remember that my favourite colour is purple" · '
                                       '"mirage what do you know about Bullet Train" · '
                                       '"mirage add fix the door script to my to-do list"',
@@ -844,6 +848,12 @@ class MirageApp(ctk.CTk):
             self.engine.update_config({"vault_path": path})
             self._refresh_vaults()
             self.add_message("system", f"Notes will be kept in: {self.engine.memory.folder}")
+
+    def _relink(self):
+        n = self.engine.memory.relink()
+        self.add_message("system", f"Linked {n} older memor{'y' if n == 1 else 'ies'}." if n
+                         else "Nothing to link: your memories already have links (or there are none yet).")
+        self.show_page("home")
 
     def _open_vault(self):
         import urllib.parse
