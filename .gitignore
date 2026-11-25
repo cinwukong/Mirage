@@ -7,3 +7,5 @@ mirage.log
 __pycache__/
 *.tmp
 *.new
+memory/
+reminders.json

@@ -455,13 +455,14 @@ class MirageApp(ctk.CTk):
         page.grid_rowconfigure(1, weight=0)
         page.grid_rowconfigure(2, weight=1)
         self.settings_tabs = ctk.CTkSegmentedButton(
-            page, values=["Microphone", "Voice", "Wake word & AI", "Hologram", "Subtitles", "App"], height=34,
+            page, values=["Microphone", "Voice", "Wake word & AI", "Memory", "Skills", "Hologram", "Subtitles", "App"],
+            height=34,
             font=ctk.CTkFont(FONT, 13), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
             unselected_color=PANEL, unselected_hover_color=PANEL_2, fg_color=PANEL,
             command=self._show_settings_tab)
         self.settings_tabs.grid(row=1, column=0, sticky="w", padx=24, pady=(6, 4))
         self.settings_sections = {}
-        for name in ("Microphone", "Voice", "Wake word & AI", "Hologram", "Subtitles", "App"):
+        for name in ("Microphone", "Voice", "Wake word & AI", "Memory", "Skills", "Hologram", "Subtitles", "App"):
             self.settings_sections[name] = make_scroll_area(page)
         cfg = self.engine.cfg
 
@@ -477,15 +478,38 @@ class MirageApp(ctk.CTk):
                       command=self._refresh_mics).pack(side="left", padx=(8, 0))
         self._refresh_mics()
 
-        h = self._row(card, "Input level", "Talk — the bar should move.")
+        h = self._row(card, "Input level")
         self.level_bar = ctk.CTkProgressBar(h, width=300, height=12, progress_color=ACCENT, fg_color=PANEL_2)
         self.level_bar.set(0)
         self.level_bar.pack()
 
-        h = self._row(card, "Mute microphone", "Mirage stops listening until you turn this off.")
+        h = self._row(card, "Mute microphone")
         self.mute_switch = ctk.CTkSwitch(h, text="", progress_color=ACCENT_DARK,
                                          command=lambda: self.engine.set_muted(bool(self.mute_switch.get())))
         self.mute_switch.pack()
+
+        card = self._card(body, "Hearing")
+        h = self._row(card, "Speech recognition", "Accurate uses Whisper for your commands.")
+        hear = {"Fast": "vosk", "Accurate (Whisper)": "whisper"}
+        self.hearing_btn = ctk.CTkSegmentedButton(
+            h, values=list(hear), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
+            unselected_color=PANEL_2, command=lambda v: self._on_hearing(hear[v]))
+        self.hearing_btn.set("Accurate (Whisper)" if cfg.get("hearing") == "whisper" else "Fast")
+        self.hearing_btn.pack()
+        h = self._row(card, "Whisper size", "Bigger is more accurate but slower.")
+        self.whisper_size = ctk.CTkOptionMenu(
+            h, width=110, values=["tiny.en", "base.en", "small.en"], fg_color=PANEL_2, button_color=BORDER,
+            button_hover_color=ACCENT_DARK, command=lambda v: self.engine.update_config({"whisper_model": v}))
+        self.whisper_size.set(cfg.get("whisper_model", "base.en"))
+        self.whisper_size.pack(side="left")
+        self.whisper_btn = ctk.CTkButton(h, text="Install Whisper", width=120, fg_color=ACCENT_DARK,
+                                         hover_color=ACCENT, command=self._install_whisper)
+        self.whisper_btn.pack(side="left", padx=(8, 0))
+        self.whisper_status = ctk.CTkLabel(card, text="", text_color=MUTED, font=ctk.CTkFont(FONT, 12),
+                                           wraplength=600, justify="left")
+        self.whisper_status.grid(row=card._next_row, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 12))
+        card._next_row += 1
+        self._refresh_whisper_ui()
 
         # --- Voice ---
         body = self.settings_sections["Voice"]
@@ -600,6 +624,60 @@ class MirageApp(ctk.CTk):
         self.ai_status.pack()
         self._update_ai_status()
 
+        # --- Memory ---
+        body = self.settings_sections["Memory"]
+        card = self._card(body, "Memory", "Mirage keeps what you tell it as notes, so you can read and edit them.")
+        h = self._row(card, "Where to keep notes",
+                      "Pick your Obsidian vault, and Mirage writes to a \"Mirage\" folder inside it.")
+        self.vault_menu = ctk.CTkOptionMenu(h, width=200, dynamic_resizing=False, fg_color=PANEL_2,
+                                            button_color=BORDER, button_hover_color=ACCENT_DARK,
+                                            command=self._on_vault_pick)
+        self.vault_menu.pack(side="left")
+        ctk.CTkButton(h, text="Browse…", width=80, fg_color=PANEL_2, hover_color=BORDER,
+                      command=self._browse_vault).pack(side="left", padx=(8, 0))
+        self._refresh_vaults()
+        h = self._row(card, "Open notes")
+        ctk.CTkButton(h, text="Open in Obsidian", width=130, fg_color=ACCENT_DARK, hover_color=ACCENT,
+                      command=self._open_vault).pack(side="left")
+        ctk.CTkButton(h, text="Open folder", width=100, fg_color=PANEL_2, hover_color=BORDER,
+                      command=lambda: self._open_path(self.engine.memory.folder)).pack(side="left", padx=(8, 0))
+        h = self._row(card, "Daily log", "Writes what you and Mirage said into a note for each day.")
+        self._switch(h, "daily_log")
+        tip = ctk.CTkLabel(card, text='Try: "mirage remember that my favourite colour is purple" · '
+                                      '"mirage what do you know about Bullet Train" · '
+                                      '"mirage add fix the door script to my to-do list"',
+                           text_color=MUTED, font=ctk.CTkFont(FONT, 12), wraplength=620, justify="left")
+        tip.grid(row=card._next_row, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 14))
+        card._next_row += 1
+
+        # --- Skills ---
+        body = self.settings_sections["Skills"]
+        card = self._card(body, "Skills")
+        h = self._row(card, "Weather city", 'For "mirage what\'s the weather".')
+        self.city_entry = ctk.CTkEntry(h, width=200, fg_color=PANEL_2, border_color=BORDER,
+                                       placeholder_text="e.g. Stockholm")
+        if cfg.get("weather_city"):
+            self.city_entry.insert(0, cfg["weather_city"])
+        self.city_entry.pack(side="left")
+        ctk.CTkButton(h, text="Test", width=60, fg_color=PANEL_2, hover_color=BORDER,
+                      command=self._test_weather).pack(side="left", padx=(8, 0))
+        self.city_entry.bind("<Return>", lambda e: self._save_city())
+        self.city_entry.bind("<FocusOut>", lambda e: self._save_city())
+        h = self._row(card, "Music", '"mirage play …" uses this.')
+        music = {"YouTube": "youtube", "Spotify": "spotify"}
+        mb = ctk.CTkSegmentedButton(h, values=list(music), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
+                                    unselected_color=PANEL_2,
+                                    command=lambda v: self.engine.update_config({"music_service": music[v]}))
+        mb.set("Spotify" if cfg.get("music_service") == "spotify" else "YouTube")
+        mb.pack()
+        card = self._card(body, "Reminders", 'Say "mirage remind me at 5 pm to stretch". '
+                                             "They're kept even if you restart your PC.")
+        self.reminder_list = ctk.CTkFrame(card, fg_color="transparent")
+        self.reminder_list.grid(row=card._next_row, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 14))
+        self.reminder_list.grid_columnconfigure(1, weight=1)
+        card._next_row += 1
+        self._render_reminders()
+
         # --- Hologram ---
         body = self.settings_sections["Hologram"]
         card = self._card(body, "Hologram", "A see-through hologram that pops up in a corner of your screen "
@@ -708,6 +786,113 @@ class MirageApp(ctk.CTk):
         self.settings_tabs.set("Microphone")
         self._show_settings_tab("Microphone")
         return page
+
+    # ---- hearing ----
+    def _refresh_whisper_ui(self):
+        installed = self.engine.hearing.whisper_installed()
+        if installed:
+            self.whisper_btn.pack_forget()
+            on = self.engine.cfg.get("hearing") == "whisper"
+            ready = self.engine.whisper.ready(self.engine.cfg.get("whisper_model", "base.en"))
+            self.whisper_status.configure(
+                text=("● Whisper is ready." if ready else "● Loading Whisper… (the first time it downloads the model)")
+                if on else "Whisper is installed. Choose Accurate to use it.",
+                text_color="#34d399" if on and ready else MUTED)
+        else:
+            self.whisper_status.configure(text="Whisper isn't installed yet. Click Install Whisper (about 200 MB).",
+                                          text_color=MUTED)
+
+    def _on_hearing(self, mode):
+        if mode == "whisper" and not self.engine.hearing.whisper_installed():
+            self.hearing_btn.set("Fast")
+            self.whisper_status.configure(text="Install Whisper first.", text_color=DANGER)
+            return
+        self.engine.update_config({"hearing": mode})
+        self._refresh_whisper_ui()
+
+    def _install_whisper(self):
+        self.whisper_btn.configure(state="disabled", text="Installing…")
+
+        def work():
+            ok = self.engine.hearing.install_whisper(lambda m: self.events.put(("whisper_status", (None, m))))
+            self.events.put(("whisper_installed", ok))
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- memory ----
+    def _refresh_vaults(self):
+        self._vaults = {"Mirage's own folder": ""}
+        for name, path in self.engine.skills.find_obsidian_vaults():
+            self._vaults[f"{name} (Obsidian)"] = path
+        cur = self.engine.cfg.get("vault_path", "")
+        if cur and cur not in self._vaults.values():
+            self._vaults[Path(cur).name] = cur
+        self.vault_menu.configure(values=list(self._vaults))
+        self.vault_menu.set(next((k for k, v in self._vaults.items() if v == cur), "Mirage's own folder"))
+
+    def _on_vault_pick(self, label):
+        self.engine.update_config({"vault_path": self._vaults.get(label, "")})
+        self.add_message("system", f"Notes will be kept in: {self.engine.memory.folder}")
+
+    def _browse_vault(self):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(title="Choose your Obsidian vault folder")
+        if path:
+            self.engine.update_config({"vault_path": path})
+            self._refresh_vaults()
+            self.add_message("system", f"Notes will be kept in: {self.engine.memory.folder}")
+
+    def _open_vault(self):
+        import urllib.parse
+        folder = self.engine.memory.folder
+        note = folder / "Memory.md"
+        if not note.exists():
+            self.engine.memory.remember("Mirage memory started")
+        if self.engine.memory.is_obsidian():
+            webbrowser.open("obsidian://open?path=" + urllib.parse.quote(str(note)))
+        else:
+            self._open_path(folder)
+
+    # ---- skills ----
+    def _save_city(self):
+        city = self.city_entry.get().strip()
+        if city != (self.engine.cfg.get("weather_city") or ""):
+            self.engine.update_config({"weather_city": city, "weather_location": None})
+
+    def _test_weather(self):
+        self._save_city()
+
+        def work():
+            try:
+                cfg = self.engine.cfg
+                if not cfg.get("weather_location") and cfg.get("weather_city"):
+                    loc = self.engine.skills.geocode(cfg["weather_city"])
+                    if loc:
+                        self.engine.update_config({"weather_location": loc})
+                msg = self.engine.skills.weather_report(self.engine.cfg)
+            except Exception as e:
+                msg = f"Couldn't get the weather: {e}"
+            self.events.put(("system", msg))
+        threading.Thread(target=work, daemon=True).start()
+        self.show_page("home")
+
+    def _render_reminders(self):
+        for w in self.reminder_list.winfo_children():
+            w.destroy()
+        items = self.engine.reminders.upcoming()
+        if not items:
+            ctk.CTkLabel(self.reminder_list, text="No reminders.", text_color=MUTED,
+                         font=ctk.CTkFont(FONT, 12)).grid(row=0, column=0, sticky="w")
+            return
+        for i, r in enumerate(items[:8]):
+            when = self.engine.skills.say_time(datetime.fromisoformat(r["when"]))
+            ctk.CTkLabel(self.reminder_list, text=when, text_color=MUTED, width=170, anchor="w",
+                         font=ctk.CTkFont(FONT, 12)).grid(row=i, column=0, sticky="w", pady=2)
+            ctk.CTkLabel(self.reminder_list, text=r["text"], text_color=TEXT, anchor="w",
+                         font=ctk.CTkFont(FONT, 13)).grid(row=i, column=1, sticky="w", padx=8)
+            ctk.CTkButton(self.reminder_list, text="✕", width=30, height=26, fg_color=PANEL_2,
+                          hover_color="#7f1d1d",
+                          command=lambda rid=r["id"]: (self.engine.reminders.remove(rid), self._render_reminders())
+                          ).grid(row=i, column=2)
 
     def _set_reply_mode(self, speak, subtitles):
         self.engine.update_config({"speak_replies": speak, "subtitles_enabled": subtitles})
@@ -952,21 +1137,27 @@ class MirageApp(ctk.CTk):
             body, "Apps", 'Say "mirage open <name>". Use a program name, a full path to an .exe, '
                           'or a link like discord:',
             "name, e.g. studio", r"C:\path\to\app.exe", kind="apps")
+        self.roblox_list = self._shortcut_card(
+            body, "Roblox games", 'Say "mirage open <name>" to open the game in Roblox Studio. '
+                                  "Use the path to your .rbxl file, or a place ID to open its Roblox page.",
+            "name, e.g. limbless", r"C:\path\to\game.rbxl", kind="roblox")
 
         card = self._card(body, "Things you can say")
         examples = [
             ("mirage open youtube / discord / roblox studio", "opens a website or app"),
-            ("mirage play lofi music", "plays it on YouTube"),
-            ("mirage search how to script a door in roblox", "Google search"),
-            ("mirage set a timer for 10 minutes", "timer with a spoken alert"),
-            ("mirage what time is it", "time and date"),
-            ("mirage volume up · mute · pause · next song", "media controls"),
-            ("mirage take a screenshot", "saved to Pictures\\Mirage"),
-            ("mirage type hello world", "types into the active window"),
-            ("mirage lock my computer · close window", "PC controls"),
-            ("mirage mute microphone", "stops listening"),
-            ("mirage show yourself", "opens this window"),
-            ("mirage shut down", "quits Mirage (not your PC)"),
+            ("mirage play lofi music", "YouTube or Spotify (Settings → Skills)"),
+            ("mirage remember that my favourite colour is purple", "saves it to your notes"),
+            ("mirage what do you know about Bullet Train", "searches your notes"),
+            ("mirage add fix the door script to my to-do list", "to-do list · \"what's on my to-do list\""),
+            ("mirage remind me at 5 pm to stretch", "reminders that survive restarts"),
+            ("mirage what's the weather (tomorrow)", "weather for your city"),
+            ("mirage who is Sun Wukong", "quick facts"),
+            ("mirage what's on my screen", "looks at your screen (needs the AI brain)"),
+            ("mirage playtest · stop playtest · save the game", "Roblox Studio"),
+            ("mirage set a timer for 10 minutes · what time is it", "timers, time and date"),
+            ("mirage volume up · pause · next song", "media controls"),
+            ("mirage take a screenshot · type hello · lock my computer", "PC controls"),
+            ("mirage show yourself · mute microphone · shut down", "Mirage itself"),
         ]
         for i, (say, what) in enumerate(examples):
             ctk.CTkLabel(card, text=f"“{say}”", text_color=TEXT, font=ctk.CTkFont(FONT, 13)).grid(
@@ -979,11 +1170,15 @@ class MirageApp(ctk.CTk):
     def _shortcut_items(self, kind):
         if kind == "websites":
             return self.engine.cfg["websites"]
+        if kind == "roblox":
+            return self.engine.cfg.setdefault("roblox_games", {})
         return self.engine.cfg["apps"].setdefault(M.SYSTEM, {})
 
     def _save_shortcuts(self, kind):
         if kind == "websites":
             self.engine.update_config({"websites": self.engine.cfg["websites"]})
+        elif kind == "roblox":
+            self.engine.update_config({"roblox_games": self.engine.cfg["roblox_games"]})
         else:
             self.engine.update_config({"apps": self.engine.cfg["apps"]})
 
@@ -1142,6 +1337,25 @@ class MirageApp(ctk.CTk):
             self.hologram.set_subtitle(data, "mirage")
         elif kind == "system":
             self.add_message("system", data)
+        elif kind == "whisper_status":
+            ok, msg = data
+            self.whisper_status.configure(text=msg, text_color="#34d399" if ok else (DANGER if ok is False else MUTED))
+            if ok is not None:
+                self.after(500, self._refresh_whisper_ui)
+        elif kind == "whisper_installed":
+            self.whisper_btn.configure(state="normal", text="Install Whisper")
+            self._refresh_whisper_ui()
+            if data:
+                self.add_message("system", "Whisper is installed. Choose Accurate under Settings → Microphone.")
+        elif kind == "reminders_changed":
+            self._render_reminders()
+        elif kind == "reminder":
+            self._render_reminders()
+            if self.tray:
+                try:
+                    self.tray.notify(data, "Mirage reminder")
+                except Exception:
+                    pass
         elif kind == "update_checked":
             self._apply_update_check(*data)
         elif kind == "update_progress":

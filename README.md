@@ -24,10 +24,22 @@ never touched. Mirage also checks quietly each time it starts and tells you in t
 - `add_to_startup.bat`: starts Mirage with Windows. The same setting is in Settings > App.
 - `mirage.log`: everything Mirage heard and did. Look here when something doesn't work.
 
+## Memory (Obsidian)
+In **Settings → Memory**, pick your Obsidian vault. Mirage writes to a `Mirage` folder inside it:
+`Memory.md` (things you ask it to remember), `To-do.md`, and optional daily logs. When answering,
+Mirage also searches the rest of your vault. Everything is plain notes you can edit or delete.
+
+## Accurate hearing (Whisper)
+In **Settings → Microphone**, click **Install Whisper**, then choose **Accurate**. Mirage still listens
+for "mirage" with the fast recognizer, but your commands are transcribed by Whisper (offline).
+
 ## Things you can say
 "mirage open youtube", "mirage play lofi music", "mirage search …", "mirage set a timer for 10 minutes",
 "mirage what time is it", "mirage volume up / mute / pause / next song", "mirage take a screenshot",
 "mirage type …", "mirage lock my computer", "mirage close window", "mirage mute microphone",
-"mirage show yourself", "mirage shut down" (stops Mirage, not your PC).
+"mirage show yourself", "mirage shut down" (stops Mirage, not your PC),
+"mirage remember that …", "mirage what do you know about …", "mirage add … to my to-do list",
+"mirage remind me at 5 pm to …", "mirage what's the weather", "mirage who is …",
+"mirage what's on my screen" (needs the AI brain), "mirage playtest" / "stop playtest" (Roblox Studio).
 
 With an Anthropic API key (Settings > AI brain), Mirage can also answer questions and understand free-form requests.

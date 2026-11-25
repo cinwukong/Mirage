@@ -38,7 +38,8 @@ INSTANCE_PORT = 47613
 UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
-KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip"}
+KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
+                  "memory", "reminders.json"}
 
 
 def read_version() -> str:
@@ -91,6 +92,14 @@ DEFAULT_CONFIG = {
     "hologram_style": "logo",            # "logo" (purple headband) or "orb"
     "subtitles_enabled": True,           # show Mirage's replies as text under the hologram
     "subtitles_show_you": False,         # also show what you said
+    "hearing": "vosk",                   # "vosk" (fast) or "whisper" (accurate)
+    "whisper_model": "base.en",          # tiny.en, base.en, small.en
+    "vault_path": "",                    # Obsidian vault folder ("" = Mirage's own memory folder)
+    "daily_log": False,                  # write a daily log note of what you and Mirage said
+    "weather_city": "",
+    "weather_location": None,            # filled in automatically from weather_city
+    "music_service": "youtube",          # what "play ..." uses: youtube or spotify
+    "roblox_games": {},                  # name -> .rbxl file path or place id
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
     "update_repo": "",             # "" = use UPDATE_REPO
@@ -398,6 +407,7 @@ class Voice:
             return
         log(f"MIRAGE: {text}")
         if show:
+            self.engine._last_reply = text
             self.engine.emit("reply", text)
         if self.engine.cfg.get("speak_replies", True):
             self.speaking.set()
@@ -588,17 +598,33 @@ class Brain:
          "input_schema": {"type": "object", "properties": {"site": {"type": "string"}}, "required": ["site"]}},
         {"name": "open_app", "description": "Open an application on the computer.",
          "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
-        {"name": "google", "description": "Search Google.",
+        {"name": "google", "description": "Open a Google search in the browser for the user.",
          "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
         {"name": "youtube", "description": "Search YouTube / play a video or song.",
          "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
         {"name": "media", "description": "Media/volume control.",
          "input_schema": {"type": "object", "properties": {"action": {"type": "string", "enum": [
              "volume up", "volume down", "mute", "pause", "play", "next", "previous"]}}, "required": ["action"]}},
-        {"name": "set_timer", "description": "Set a countdown timer.",
+        {"name": "set_timer", "description": "Set a short countdown timer.",
          "input_schema": {"type": "object", "properties": {"seconds": {"type": "integer"},
                                                            "label": {"type": "string"}}, "required": ["seconds"]}},
-        {"name": "screenshot", "description": "Take a screenshot.",
+        {"name": "set_reminder", "description": "Set a reminder that survives restarts. Give the time as "
+                                                "ISO 8601 local time (YYYY-MM-DDTHH:MM).",
+         "input_schema": {"type": "object", "properties": {"when": {"type": "string"}, "text": {"type": "string"}},
+                          "required": ["when", "text"]}},
+        {"name": "remember", "description": "Save a fact about the user to long-term memory (their notes).",
+         "input_schema": {"type": "object", "properties": {"fact": {"type": "string"}}, "required": ["fact"]}},
+        {"name": "search_notes", "description": "Search the user's notes (Obsidian vault) and memory.",
+         "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+        {"name": "add_todo", "description": "Add an item to the user's to-do list.",
+         "input_schema": {"type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"]}},
+        {"name": "list_todos", "description": "Get the user's open to-do items.",
+         "input_schema": {"type": "object", "properties": {}}},
+        {"name": "get_weather", "description": "Current weather and forecast for the user's city.",
+         "input_schema": {"type": "object", "properties": {"day": {"type": "string", "enum": ["today", "tomorrow"]}}}},
+        {"name": "look_at_screen", "description": "Take a screenshot of the user's screen to see what they see.",
+         "input_schema": {"type": "object", "properties": {}}},
+        {"name": "screenshot", "description": "Save a screenshot to the user's Pictures folder.",
          "input_schema": {"type": "object", "properties": {}}},
         {"name": "type_text", "description": "Type text with the keyboard into the focused window.",
          "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
@@ -622,65 +648,125 @@ class Brain:
             except Exception as e:
                 log(f"AI brain unavailable: {e}")
 
-    def ask(self, text: str) -> str:
-        if not self.client:
-            return "Sorry, I don't know how to do that yet. Add an API key in settings to make me smarter."
-        system = (
-            "You are Mirage, a voice assistant running on the user's computer, like JARVIS. "
-            "Your replies are spoken aloud, so keep them short (1-2 sentences), "
+    def _system(self, text):
+        eng = self.engine
+        sk = eng.skills
+        mem_lines = [sk.clean_md(l) for l in eng.memory.memory_lines(40)]
+        notes = eng.memory.search(text, 6)
+        todos = eng.memory.todos()[:15]
+        parts = [
+            "You are Mirage, a voice assistant running on the user's Windows computer, like JARVIS. "
+            "Your replies are spoken aloud and shown as subtitles, so keep them short (1-3 sentences), "
             "conversational, and never use markdown, lists or emojis. "
             f"The current time is {datetime.now():%A %Y-%m-%d %H:%M}. "
-            "Use the tools when the user wants something done on the computer. "
-            "The input may come from speech recognition and contain mis-heard words; "
-            "interpret it sensibly."
-        )
-        self.history.append({"role": "user", "content": text})
-        self.history = self.history[-10:]
-        while self.history and self.history[0]["role"] != "user":
-            self.history.pop(0)
+            "Use the tools when the user wants something done or when you need information. "
+            "When the user tells you something about themselves worth keeping, save it with remember. "
+            "The input may come from speech recognition and contain mis-heard words; interpret it sensibly."
+        ]
+        if mem_lines:
+            parts.append("Things the user asked you to remember:\n" + "\n".join(f"- {l}" for l in mem_lines))
+        if notes:
+            parts.append("Possibly relevant lines from the user's notes:\n"
+                         + "\n".join(f"- [{n}] {sk.clean_md(l)}" for n, l in notes))
+        if todos:
+            parts.append("Open to-do items: " + "; ".join(todos))
+        return "\n\n".join(parts)
+
+    def _screen_block(self):
+        import base64
+        import io
+        import pyautogui
+        img = pyautogui.screenshot()
+        img.thumbnail((1400, 1400))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=80)
+        return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                            "data": base64.b64encode(buf.getvalue()).decode()}}
+
+    def ask(self, text: str, screen: bool = False) -> str:
+        if not self.client:
+            return "Sorry, I don't know how to do that yet. Add an API key in settings to make me smarter."
+        content = [{"type": "text", "text": text}]
+        if screen:
+            try:
+                content.insert(0, self._screen_block())
+            except Exception as e:
+                log(f"Screenshot failed: {e}")
+        history = [m for m in self.history[-10:]]
+        while history and history[0]["role"] != "user":
+            history.pop(0)
+        messages = history + [{"role": "user", "content": content}]
+        system = self._system(text)
+        spoken = []
         try:
-            resp = self.client.messages.create(
-                model=self.engine.cfg.get("anthropic_model") or "claude-haiku-5-5",
-                max_tokens=300, system=system, tools=self.TOOLS, messages=self.history,
-            )
+            for _ in range(5):  # let the model use tools and read their results
+                resp = self.client.messages.create(
+                    model=self.engine.cfg.get("anthropic_model") or "claude-haiku-5-5",
+                    max_tokens=400, system=system, tools=self.TOOLS, messages=messages)
+                spoken = [b.text for b in resp.content if b.type == "text"]
+                uses = [b for b in resp.content if b.type == "tool_use"]
+                if not uses:
+                    break
+                messages.append({"role": "assistant", "content": resp.content})
+                results = []
+                for b in uses:
+                    out = self.run_tool(b.name, b.input or {})
+                    results.append({"type": "tool_result", "tool_use_id": b.id,
+                                    "content": out if isinstance(out, list) else str(out or "done")})
+                messages.append({"role": "user", "content": results})
         except Exception as e:
             log(f"AI error: {e}")
-            self.history.pop()
             return "I couldn't reach my brain right now."
-
-        spoken, did_something = [], False
-        for block in resp.content:
-            if block.type == "text":
-                spoken.append(block.text)
-            elif block.type == "tool_use":
-                did_something = True
-                self.run_tool(block.name, block.input)
-        reply = " ".join(spoken).strip() or ("Done." if did_something else "")
-        self.history.append({"role": "assistant", "content": reply or "Done."})
+        reply = " ".join(spoken).strip() or "Done."
+        self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
+        self.history = self.history[-12:]
         return reply
 
     def run_tool(self, name: str, args: dict):
-        a = self.engine.actions
+        eng = self.engine
+        a, sk = eng.actions, eng.skills
         log(f"AI tool: {name} {args}")
         try:
             if name == "open_website":
-                a.open_website(args["site"]) or a.google(args["site"])
-            elif name == "open_app":
-                a.open_app(args["name"])
-            elif name == "google":
-                a.google(args["query"])
-            elif name == "youtube":
-                a.youtube(args["query"])
-            elif name == "media":
-                a.media(args["action"])
-            elif name == "set_timer":
-                a.set_timer(int(args["seconds"]), args.get("label", ""))
-            elif name == "screenshot":
-                a.screenshot()
-            elif name == "type_text":
-                a.type_text(args["text"])
+                return a.open_website(args["site"]) or a.google(args["site"])
+            if name == "open_app":
+                return a.open_app(args["name"])
+            if name == "google":
+                return a.google(args["query"])
+            if name == "youtube":
+                return a.youtube(args["query"])
+            if name == "media":
+                return a.media(args["action"]) or "done"
+            if name == "set_timer":
+                return a.set_timer(int(args["seconds"]), args.get("label", ""))
+            if name == "set_reminder":
+                when = datetime.fromisoformat(args["when"])
+                eng.reminders.add(when, args["text"])
+                eng.emit("reminders_changed")
+                return f"Reminder set {sk.say_time(when)}."
+            if name == "remember":
+                eng.memory.remember(args["fact"])
+                return "Saved."
+            if name == "search_notes":
+                hits = eng.memory.search(args["query"], 8)
+                return "\n".join(f"[{n}] {sk.clean_md(l)}" for n, l in hits) or "Nothing found."
+            if name == "add_todo":
+                eng.memory.add_todo(args["item"])
+                return "Added."
+            if name == "list_todos":
+                return "; ".join(eng.memory.todos()) or "The to-do list is empty."
+            if name == "get_weather":
+                return sk.weather_report(eng.cfg, args.get("day", "today"))
+            if name == "look_at_screen":
+                return [self._screen_block(), {"type": "text", "text": "This is the user's screen right now."}]
+            if name == "screenshot":
+                return a.screenshot()
+            if name == "type_text":
+                return a.type_text(args["text"]) or "typed"
+            return f"Unknown tool {name}"
         except Exception as e:
             log(f"Tool {name} failed: {e}")
+            return f"That failed: {e}"
 
 
 # --------------------------------------------------------------------------- #
@@ -708,6 +794,16 @@ class Engine:
         self._wake_cache = (None, None)
         global GITHUB_TOKEN
         GITHUB_TOKEN = (self.cfg.get("github_token") or "").strip()
+        import hearing
+        import skills
+        self.skills = skills
+        self.hearing = hearing
+        self.memory = skills.Memory(lambda: self.cfg)
+        self.reminders = skills.Reminders(self._reminder_due)
+        self.whisper = hearing.Whisper(log=log)
+        self._last_reply = None
+        if self.cfg.get("hearing") == "whisper" and hearing.whisper_installed():
+            self.whisper.load_async(self.cfg.get("whisper_model", "base.en"))
         self.voice = Voice(self)
         self.actions = Actions(self)
         self.brain = Brain(self)
@@ -772,6 +868,12 @@ class Engine:
             self._restart_audio.set()
         if "anthropic_api_key" in changes or "anthropic_model" in changes:
             self.brain.reload()
+        if self.cfg.get("hearing") == "whisper" and ("hearing" in changes or "whisper_model" in changes):
+            if self.hearing.whisper_installed():
+                self.whisper.load_async(self.cfg.get("whisper_model", "base.en"),
+                                        lambda ok, msg: self.emit("whisper_status", (ok, msg)))
+        if "weather_city" in changes:
+            self.cfg["weather_location"] = None
         if "github_token" in changes:
             global GITHUB_TOKEN
             GITHUB_TOKEN = (changes["github_token"] or "").strip()
@@ -785,14 +887,36 @@ class Engine:
         return self._wake_cache[1]
 
     # ---- background threads ----
+    def _whisper_on(self):
+        return self.cfg.get("hearing") == "whisper" and self.whisper.ready(self.cfg.get("whisper_model", "base.en"))
+
     def _worker(self):
         while self.running:
-            text = self.cmd_q.get()
-            if text is None:
+            item = self.cmd_q.get()
+            if item is None:
                 break
             self.set_status("thinking")
+            text = item
+            if isinstance(item, tuple):  # ("audio", pcm, vosk_text, had_wake_word)
+                _, pcm, fallback, had_wake = item
+                try:
+                    heard = self.whisper.transcribe(pcm)
+                    found, cleaned = self.hearing.strip_wake(heard, self.cfg.get("wake_words", []))
+                    log(f"Whisper heard: {heard!r}")
+                    text = cleaned if cleaned else fallback
+                    if had_wake and not found and fallback:
+                        # Whisper didn't write the wake word; trust it only if it's close in length
+                        text = cleaned if len(cleaned.split()) <= len(fallback.split()) + 2 else fallback
+                except Exception as e:
+                    log(f"Whisper failed, using fast recognizer text: {e}")
+                    text = fallback
+                if not text:
+                    self.set_status(self.idle_status())
+                    continue
+            self._last_reply = None
             try:
                 self.handle(text)
+                self.memory.log_exchange(text, self._last_reply or "")
             except Exception as e:
                 log(f"Error handling '{text}': {e}")
                 self.voice.say("Something went wrong.")
@@ -841,6 +965,7 @@ class Engine:
 
     def _listen(self, rec, audio_q):
         timeout = lambda: float(self.cfg.get("command_timeout_seconds", 6))
+        utter = bytearray()
         while self.running and not self._restart_audio.is_set():
             try:
                 data = audio_q.get(timeout=0.5)
@@ -854,11 +979,17 @@ class Engine:
             self.emit("level", (max(max(samples), -min(samples)) / 32768) if samples else 0.0)
             if self.voice.speaking.is_set():
                 rec.Reset()  # don't listen to ourselves
+                utter.clear()
                 continue
             if self.status == "awaiting" and time.time() > self.awaiting_until:
                 self.set_status(self.idle_status())
+            utter.extend(data)
+            if len(utter) > SAMPLE_RATE * 2 * 25:  # keep at most ~25 s of one utterance
+                del utter[:len(utter) - SAMPLE_RATE * 2 * 25]
             if not rec.AcceptWaveform(data):
                 continue
+            pcm = bytes(utter)
+            utter.clear()
             text = json.loads(rec.Result()).get("text", "").strip()
             if not text:
                 continue
@@ -868,7 +999,7 @@ class Engine:
                 command = text[m.end():].strip()
                 if command:
                     self.awaiting_until = 0
-                    self.cmd_q.put(command)
+                    self.cmd_q.put(("audio", pcm, command, True) if self._whisper_on() else command)
                 else:
                     self.emit("wake")
                     if self.cfg.get("wake_sound", True):
@@ -878,7 +1009,13 @@ class Engine:
                     self.voice.say("Yes?", show=False)
             elif time.time() < self.awaiting_until:
                 self.awaiting_until = 0
-                self.cmd_q.put(text)
+                self.cmd_q.put(("audio", pcm, text, False) if self._whisper_on() else text)
+
+    def _reminder_due(self, r):
+        log(f"Reminder due: {r['text']}")
+        beep(); beep()
+        self.emit("reminder", r["text"])
+        self.voice.say(f"Reminder: {r['text']}")
 
     # ---- command router ----
     def handle(self, text: str):
@@ -903,6 +1040,110 @@ class Engine:
             self.set_muted(True)
             return
 
+        sk, mem = self.skills, self.memory
+
+        # ---- memory ----
+        m = re.match(r"^(?:please )?(?:remember|don'?t forget|note) (?:that )?(.+)$", text)
+        if m and not text.startswith("remember to remind"):
+            mem.remember(m.group(1))
+            return say("Got it. I'll remember that.")
+        m = re.match(r"^forget (?:that |about )?(.+)$", text)
+        if m:
+            n = mem.forget(m.group(1))
+            return say("Forgotten." if n else "I couldn't find that in my memory.")
+        if re.fullmatch(r"what do you (?:remember|know)(?: about me)?", text):
+            lines = [sk.clean_md(l) for l in mem.memory_lines(3)]
+            return say("You told me: " + "; ".join(lines) + "." if lines else "You haven't asked me to remember anything yet.")
+        m = re.match(r"^(?:what do you (?:remember|know) about|what did i (?:say|tell you) about|"
+                     r"search (?:in )?my notes (?:for|about)|search notes for|look in my notes for|"
+                     r"find (?:in )?my notes(?: about)?|check my notes (?:for|about)) (.+)$", text)
+        if m:
+            if self.brain.client:
+                return say(self.brain.ask(text))
+            hits = mem.search(m.group(1), 3)
+            if not hits:
+                return say(f"I couldn't find anything about {m.group(1)} in your notes.")
+            parts = [sk.clean_md(line) for note, line in hits[:2]]
+            return say("From your notes: " + ". ".join(p.rstrip(".") for p in parts)[:320] + ".")
+
+        # ---- to-do list ----
+        m = re.match(r"^(?:add|put) (.+?) (?:to|on) (?:my |the )?(?:to ?do|to-do|todo)(?: list)?$", text)
+        if m:
+            mem.add_todo(m.group(1))
+            return say(f"Added {m.group(1)} to your to-do list.")
+        if re.search(r"\b(?:what'?s|what is|read|show me|tell me|go through) (?:on )?(?:my|the) (?:to ?do|to-do|todo)", text) \
+                or re.fullmatch(r"(?:my )?(?:to ?do|to-do|todo)(?: list)?", text):
+            items = mem.todos()
+            if not items:
+                return say("Your to-do list is empty.")
+            more = f", and {len(items) - 5} more" if len(items) > 5 else ""
+            return say(f"You have {len(items)} thing{'s' if len(items) != 1 else ''} to do: "
+                       + "; ".join(items[:5]) + more + ".")
+        m = re.match(r"^(?:mark|check off|tick off|cross off|complete) (.+?)(?: as done| as complete| off)?"
+                     r"(?: on my (?:to ?do|to-do|todo) list)?$", text) or re.match(r"^i (?:finished|did|completed) (.+)$", text)
+        if m:
+            done = mem.complete_todo(m.group(1))
+            return say(f"Nice. Checked off {done}." if done else "I couldn't find that on your to-do list.")
+
+        # ---- reminders ----
+        if re.search(r"\b(?:what are|list|read|tell me) (?:all )?my reminders\b|\bdo i have any reminders\b", text):
+            items = self.reminders.upcoming()
+            if not items:
+                return say("You have no reminders.")
+            parts = [f"{r['text']} {sk.say_time(datetime.fromisoformat(r['when']))}" for r in items[:4]]
+            return say("Your reminders: " + "; ".join(parts) + ".")
+        if re.search(r"\b(?:cancel|clear|delete|remove) (?:all )?(?:of )?my reminders\b", text):
+            n = self.reminders.clear()
+            return say(f"Cleared {n} reminder{'s' if n != 1 else ''}." if n else "You had no reminders.")
+        if re.search(r"\bremind me\b", text):
+            when, rest = sk.parse_when(text)
+            what = re.sub(r"^.*?\bremind me\b\s*", "", rest)
+            what = re.sub(r"^(?:to|that|about|of)\s+", "", what).strip() or "your reminder"
+            what = re.sub(r"\bmy\b", "your", what)
+            if when is None:
+                return say("When should I remind you? Say for example: remind me at 5 pm to stretch.")
+            self.reminders.add(when, what)
+            self.emit("reminders_changed")
+            return say(f"Okay, I'll remind you {sk.say_time(when)}.")
+
+        # ---- screen ----
+        if re.search(r"\b(?:what'?s|what is) on (?:my|the) screen\b|\blook at (?:my|the|this) screen\b|"
+                     r"\bwhat am i looking at\b|\b(?:read|check|see) (?:my|the) screen\b|\bon my screen\b", text):
+            if not self.brain.client:
+                return say("I need my AI brain to look at your screen. Add an API key in settings.")
+            return say(self.brain.ask(text, screen=True))
+
+        # ---- weather ----
+        if re.search(r"\bweather\b|\btemperature (?:outside|today|tomorrow)\b|\bhow (?:hot|cold|warm) is it\b|"
+                     r"\b(?:will|is) it (?:going to )?(?:rain|snow)\b|\bdo i need (?:an umbrella|a jacket)\b", text):
+            try:
+                return say(sk.weather_report(self.cfg, "tomorrow" if "tomorrow" in text else "today"))
+            except Exception as e:
+                log(f"Weather failed: {e}")
+                return say("I couldn't get the weather right now.")
+
+        # ---- Roblox Studio ----
+        if re.fullmatch(r"(?:start |run |begin )?(?:a )?play ?test(?:ing)?(?: the game| my game)?|test (?:the|my) game", text):
+            return say(sk.studio_key("f5") or "Starting playtest.")
+        if re.fullmatch(r"(?:stop|end|exit) (?:the )?play ?test(?:ing)?", text):
+            return say(sk.studio_key("shift", "f5") or "Stopped.")
+        if re.fullmatch(r"save (?:the |my )?(?:game|place)(?: in studio)?", text):
+            return say(sk.studio_key("ctrl", "s") or "Saved.")
+
+        # ---- music ----
+        m = re.match(r"^play (.+?) on spotify$", text)
+        if m or (re.match(r"^(?:play|put on) (.+)$", text) and self.cfg.get("music_service") == "spotify"
+                 and not text.startswith(("play test", "playtest"))):
+            q = (m or re.match(r"^(?:play|put on) (.+)$", text)).group(1)
+            q = re.sub(r" on spotify$", "", q)
+            uri = "spotify:search:" + urllib.parse.quote(q)
+            try:
+                os.startfile(uri) if SYSTEM == "Windows" else webbrowser.open(
+                    "https://open.spotify.com/search/" + urllib.parse.quote(q))
+                return say(f"Here's {q} on Spotify.")
+            except Exception:
+                return say("I couldn't open Spotify.")
+
         m = re.match(r"^(?:play|put on) (.+?)(?: on youtube)?$", text)
         if m and m.group(1) not in ("music",):
             return say(a.youtube(m.group(1)))
@@ -916,7 +1157,8 @@ class Engine:
         m = re.match(r"^(?:open|launch|start|go to) (.+)$", text)
         if m:
             target = m.group(1).strip()
-            reply = a.open_website(target) or a.open_app(target)
+            game = re.sub(r"^(?:my game|the game|game) |(?: in studio| in roblox studio)$", "", target).strip()
+            reply = sk.open_roblox_game(self.cfg, game) or a.open_website(target) or a.open_app(target)
             return say(reply)
 
         if re.search(r"\b(set (a )?timer|timer for|remind me in)\b", text):
@@ -951,6 +1193,16 @@ class Engine:
             return say(a.close_window())
         if re.fullmatch(r"(hello|hi|hey)( there)?", text):
             return say("Hello. What can I do for you?")
+
+        m = re.match(r"^(?:who|what) (?:is|was|are|were) (?:a |an |the )?(.+)$", text) or \
+            re.match(r"^(?:tell me about|what do you know about) (.+)$", text)
+        if m and not self.brain.client:
+            try:
+                fact = sk.wiki_summary(m.group(1))
+                if fact:
+                    return say(fact)
+            except Exception as e:
+                log(f"Wikipedia failed: {e}")
 
         say(self.brain.ask(text))
 
