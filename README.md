@@ -24,8 +24,17 @@ hidden in the tray when you log in. Updates install from **Settings → App → 
 - **Memory**: things Mirage remembers, your to-do list and reminders. Add, tick off or delete.
 - **Shortcuts**: your own voice commands ("mirage good morning" → open Spotify), plus websites,
   apps and Roblox games Mirage can open.
-- **Settings**: brain, listening (microphone, wake words, Whisper), voice (Windows or VoiceStudio),
+- **Settings**: brain, listening (microphone, wake words, Whisper), voice (Windows, Built-in or VoiceStudio),
   hologram, memory (Obsidian vault), skills (weather city, music) and app options.
+
+## Mirage's own voice
+**Settings → Voice → Built-in** runs an AI voice (OmniVoice) inside Mirage, so no other app has to be
+open. Click **Install** once: it downloads PyTorch for your graphics card and the voice model, about
+6 GB in all. Then make voices three ways:
+- **Describe it**: pick voice, age, pitch and accent, listen to takes and keep the one you like.
+- **Clone a recording**: 5 to 15 seconds of one person talking clearly.
+- **From VoiceStudio**: voices you made in VoiceStudio come over on their own the first time, and
+  can be brought over again any time. VoiceStudio doesn't need to be open or even installed after that.
 
 ## Files
 - `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
@@ -33,5 +42,5 @@ hidden in the tray when you log in. Updates install from **Settings → App → 
 - `mirage.py`: listening, speaking and the built-in shortcuts
 - `brains.py`: Claude Code and API-key brains, and the skills they can use
 - `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio
-- `hearing.py`: Whisper; `hologram.py`: the corner hologram
-- `config.json`, `memory/`, `reminders.json`, `model/` are kept on your PC and never uploaded.
+- `hearing.py`: Whisper; `hologram.py`: the corner hologram; `voice_local.py`: Mirage's own voice
+- `config.json`, `memory/`, `reminders.json`, `model/`, `voices/`, `voice_model/` are kept on your PC and never uploaded.

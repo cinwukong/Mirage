@@ -100,6 +100,7 @@ class Bridge:
             "start_page": a.start_page,
             "options": a.options,
             "whisper": a.whisper_state(),
+            "mv": a.mv_state(),
             "claude": a.claude_state(),
             "startup": get_startup(),
             "update_available": a.update_available,
@@ -130,6 +131,128 @@ class Bridge:
 
     def test_voice(self):
         self._app.engine.voice.say("Hello. This is how I sound.", show=False)
+
+    # ---- Mirage's own voice ----
+    def install_mirage_voice(self):
+        a = self._app
+        lv = a.engine.local_voice
+        if lv.state == "installing":
+            return
+
+        def work():
+            import voice_local
+            lv._set("installing", "Starting…")
+            try:
+                ok, msg = voice_local.install(lambda m: (setattr(lv, "detail", m), a.push("progress", ["mvState", m, "wait"])))
+            except Exception as e:
+                ok, msg = False, f"Install failed: {e}"
+            lv._set("off" if ok else "error", msg)
+            if ok:
+                if a.engine.cfg.get("voice_engine") != "mirage":
+                    a.engine.update_config({"voice_engine": "mirage"})  # also starts loading it
+                else:
+                    lv.load_async(then=a.engine.voice_loaded)
+                a.push("toast", "Mirage's own voice is installed.")
+            else:
+                a.push("toast", "The voice didn't install. The reason is next to the button.")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mv_job(self, label, fn, ok_msg=None):
+        """Run a voice-lab job in the background and show how it went next to its button."""
+        a = self._app
+
+        def work():
+            if not a.engine.local_voice.ready():
+                a.push("progress", [label, "The voice is still loading. Try again in a moment.", "bad"])
+                return
+            a.push("progress", [label, "Working…", "wait"])
+            try:
+                res = fn()
+                a.push("state", {"mv": a.mv_state(), "cfg": a.cfg_view()})
+                a.push("progress", [label, ok_msg(res) if callable(ok_msg) else (ok_msg or "Done"), "ok"])
+            except Exception as e:
+                a.push("progress", [label, str(e), "bad"])
+        threading.Thread(target=work, daemon=True).start()
+
+    def mv_preview(self, instruct):
+        lv = self._app.engine.local_voice
+        self._mv_job("mvDesignState", lambda: lv.design_preview(instruct),
+                     lambda r: "That's the voice. Keep it, or try another take.")
+
+    def mv_save_design(self, name):
+        e = self._app.engine
+
+        def go():
+            v = e.local_voice.design_save(name)
+            e.update_config({"mirage_voice": v["id"]})
+            return v
+        self._mv_job("mvDesignState", go, lambda v: f"Saved “{v['name']}” and switched to it.")
+
+    def mv_pick_file(self):
+        import webview
+        kind = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or getattr(webview, "OPEN_DIALOG", 10)
+        res = self._app.window.create_file_dialog(kind, file_types=("Recordings (*.wav;*.mp3;*.flac;*.ogg)", "All files (*.*)"))
+        return str(res[0]) if res else None
+
+    def mv_save_clone(self, path, name, transcript):
+        e = self._app.engine
+
+        def go():
+            if not path or not os.path.isfile(path):
+                raise ValueError("Pick a recording first.")
+            v = e.local_voice.clone_save(path, name, transcript)
+            e.update_config({"mirage_voice": v["id"]})
+            e.voice.say(f"This is {v['name']}.", show=False)
+            return v
+        self._mv_job("mvCloneState", go, lambda v: f"Saved “{v['name']}” and switched to it.")
+
+    def mv_import(self, vs_id):
+        e = self._app.engine
+        vl = e.voice_local
+
+        def go():
+            v = vl.import_voicestudio(vs_id)
+            e.local_voice.forget(v["id"])
+            e.update_config({"mirage_voice": v["id"]})
+            e.voice.say(f"This is {v['name']}.", show=False)
+            return v
+        self._mv_job("mvImportState", go, lambda v: f"Brought over “{v['name']}” and switched to it.")
+
+    def mv_delete(self, vid):
+        e = self._app.engine
+        vl = e.voice_local
+        vl.delete_voice(vid)
+        e.local_voice.forget(vid)
+        if e.cfg.get("mirage_voice") == vid:
+            rest = vl.list_voices()
+            e.update_config({"mirage_voice": rest[0]["id"] if rest else ""})
+        return {"mv": self._app.mv_state(), "cfg": self._app.cfg_view()}
+
+    def mv_rename(self, vid, name):
+        self._app.engine.voice_local.rename_voice(vid, str(name))
+        return self._app.mv_state()
+
+    def mv_refresh(self):
+        return self._app.mv_state()
+
+    def mv_reload(self):
+        e = self._app.engine
+        e.local_voice.load_async(then=e.voice_loaded)
+
+    def mv_play(self, vid):
+        e = self._app.engine
+        v = e.voice_local.get_voice(vid)
+        if not v or not e.local_voice.ready():
+            return
+
+        def work():
+            try:
+                speed = max(0.5, min(2.0, int(e.cfg.get("voice_rate", 185)) / 185))
+                e.local_voice.speak(f"Hello. This is {v['name']}.", v, speed, e.cfg.get("mirage_voice_quality", "balanced"),
+                                    float(e.cfg.get("voice_volume", 1.0)))
+            except Exception as err:
+                self._app.push("toast", f"Couldn't play it: {err}")
+        threading.Thread(target=work, daemon=True).start()
 
     def preview_hologram(self):
         self._app.holo.call("preview", 4.0)
@@ -351,6 +474,17 @@ class App:
         c.setdefault("voice_commands", [])
         return c
 
+    def mv_state(self):
+        e = self.engine
+        vl = e.voice_local
+        st = e.local_voice.status()
+        st["voices"] = [{"id": v["id"], "name": v["name"], "kind": v.get("kind", ""), "source": v.get("source", ""),
+                         "vs_id": v.get("vs_id", "")}
+                        for v in vl.list_voices()]
+        st["vs"] = [v for v in vl.voicestudio_voices() if v["has_audio"] or v["instruct"]]
+        st["options"] = vl.DESIGN_OPTIONS
+        return st
+
     def whisper_state(self):
         e = self.engine
         return {"installed": e.hearing.whisper_installed(),
@@ -432,6 +566,10 @@ class App:
                 self.tray.notify(data, "Mirage reminder")
             except Exception:
                 pass
+        elif kind == "mirage_voice":
+            if getattr(self, "engine", None) is not None:  # not while the engine is still starting
+                self.push("state", {"mv": self.mv_state()})
+            return
         elif kind == "whisper_status":
             ok, msg = data
             self.push("progress", ["whisperState", msg, "ok" if ok else ("bad" if ok is False else "wait")])

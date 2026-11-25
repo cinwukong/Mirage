@@ -39,7 +39,7 @@ UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
 KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
-                  "memory", "reminders.json", ".webview"}
+                  "memory", "reminders.json", ".webview", "voices", "voice_model"}
 
 
 def read_version() -> str:
@@ -77,7 +77,9 @@ DEFAULT_CONFIG = {
     "wake_words": ["mirage", "mirages", "my rage", "mirror"],
     "command_timeout_seconds": 6,
     "input_device": None,          # None = system default microphone
-    "voice_engine": "windows",     # "windows" (built-in voices) or "voicestudio"
+    "voice_engine": "windows",     # "windows", "mirage" (Mirage's own AI voice) or "voicestudio"
+    "mirage_voice": "",            # which of Mirage's own voices to use (id in the voices folder)
+    "mirage_voice_quality": "balanced",  # fast, balanced, best
     "voice_id": "",                # "" = system default voice
     "voicestudio_url": "http://localhost:3900",
     "voicestudio_voice": "",       # VoiceStudio voice/profile id ("" = its default)
@@ -337,6 +339,7 @@ class Voice:
         self.voices: list = []  # [(id, name)]
         self._vs_cache: dict = {}
         self._vs_warned = False
+        self._lv_warned = False
         threading.Thread(target=self._run, daemon=True, name="mirage-tts").start()
 
     def _run(self):
@@ -359,6 +362,8 @@ class Voice:
             spoken = False
             if cfg.get("voice_engine") == "voicestudio":
                 spoken = self._speak_voicestudio(text, cfg)
+            elif cfg.get("voice_engine") == "mirage":
+                spoken = self._speak_local(text, cfg)
             if tts and not spoken:
                 try:
                     tts.setProperty("rate", int(cfg.get("voice_rate", 185)))
@@ -404,6 +409,32 @@ class Voice:
                 self._vs_warned = True
                 self.engine.emit("system", "Couldn't reach VoiceStudio, so I'm using the Windows voice for now. "
                                            "Make sure VoiceStudio is open.")
+            return False
+
+    def _speak_local(self, text, cfg) -> bool:
+        engine = self.engine
+        lv, vl = engine.local_voice, engine.voice_local
+        if not lv.ready() and vl.installed():
+            lv.load_async(then=engine.voice_loaded)
+            if lv._loader is not None:
+                lv._loader.join(90)  # it's loading (takes up to a minute); wait rather than switch voices
+        if not lv.ready():
+            if not self._lv_warned:
+                self._lv_warned = True
+                engine.emit("system", "Mirage's own voice isn't installed yet (Settings > Voice), so I'm using the Windows voice."
+                            if not vl.installed() else "My voice didn't load, so I'm using the Windows voice. " + lv.detail)
+            return False
+        try:
+            voice = vl.get_voice(cfg.get("mirage_voice"))
+            speed = max(0.5, min(2.0, int(cfg.get("voice_rate", 185)) / 185))
+            lv.speak(text, voice, speed, cfg.get("mirage_voice_quality", "balanced"), float(cfg.get("voice_volume", 1.0)))
+            self._lv_warned = False
+            return True
+        except Exception as e:
+            log(f"Built-in voice failed: {e}")
+            if not self._lv_warned:
+                self._lv_warned = True
+                engine.emit("system", f"My voice had a problem ({e}), so I'm using the Windows voice for now.")
             return False
 
     def say(self, text: str, show: bool = True):
@@ -633,6 +664,12 @@ class Engine:
         self._last_reply = None
         if self.cfg.get("hearing") == "whisper" and hearing.whisper_installed():
             self.whisper.load_async(self.cfg.get("whisper_model", "base.en"))
+        import voice_local
+        self.voice_local = voice_local
+        self.local_voice = voice_local.LocalVoice(log=log, on_change=lambda: self.emit("mirage_voice"),
+                                                  whisper=self.whisper)
+        if self.cfg.get("voice_engine") == "mirage":
+            self.local_voice.load_async(then=self.voice_loaded)
         self.voice = Voice(self)
         self.actions = Actions(self)
         import brains
@@ -709,11 +746,44 @@ class Engine:
             if self.hearing.whisper_installed():
                 self.whisper.load_async(self.cfg.get("whisper_model", "base.en"),
                                         lambda ok, msg: self.emit("whisper_status", (ok, msg)))
+        if "voice_engine" in changes and changes["voice_engine"] != old.get("voice_engine"):
+            if changes["voice_engine"] == "mirage":
+                self.local_voice.load_async(then=self.voice_loaded)
+            else:  # give the graphics card's memory back
+                threading.Thread(target=self.local_voice.unload, daemon=True).start()
         if "weather_city" in changes:
             self.cfg["weather_location"] = None
         if "github_token" in changes:
             global GITHUB_TOKEN
             GITHUB_TOKEN = (changes["github_token"] or "").strip()
+
+    def voice_loaded(self):
+        """Once Mirage's own voice is ready, make sure there's a voice picked to speak with."""
+        vl = self.voice_local
+        if vl.get_voice(self.cfg.get("mirage_voice")):
+            return
+        voices = vl.list_voices()
+        if not voices:  # first time: bring over the voices made in VoiceStudio
+            for v in vl.voicestudio_voices():
+                if v["demo"]:
+                    continue
+                try:
+                    vl.import_voicestudio(v["vs_id"])
+                except Exception as e:
+                    log(f"Couldn't bring over the VoiceStudio voice {v['name']}: {e}")
+            voices = vl.list_voices()
+            if voices:
+                self.emit("system", "Brought over your VoiceStudio voices: " + ", ".join(v["name"] for v in voices) + ".")
+        if not voices:
+            try:
+                self.local_voice.design_preview(vl.DEFAULT_DESIGN, seed=7, play=False)
+                voices = [self.local_voice.design_save("Mirage")]
+            except Exception as e:
+                log(f"Couldn't make a starting voice: {e}")
+                return
+        pick = next((v for v in voices if v.get("vs_id") and v["vs_id"] == self.cfg.get("voicestudio_voice")), voices[0])
+        self.update_config({"mirage_voice": pick["id"]})
+        self.emit("mirage_voice")
 
     @property
     def wake_re(self):

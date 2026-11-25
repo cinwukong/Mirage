@@ -10,3 +10,5 @@ __pycache__/
 memory/
 reminders.json
 .webview/
+voices/
+voice_model/

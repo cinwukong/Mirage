@@ -105,7 +105,11 @@ function onEvent(kind, data) {
     case "state": Object.assign(S, data); if (page === "settings") renderSettings(); break;
     case "memory_changed": case "reminders_changed": if (page === "memory") renderMemory(); break;
     case "toast": toast(data); break;
-    case "progress": { const el = $("#" + data[0]); if (el) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); } } break;
+    case "progress": {
+      if (data[0] === "mvState" && S.mv) S.mv.detail = data[1];
+      const el = $("#" + data[0]); if (el) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
+      if (data[0] === "mvDesignState" && data[2] === "ok" && /Keep it/.test(data[1])) { lab.previewed = true; const k = $("#labKeep"); if (k) k.disabled = false; }
+    } break;
     case "refresh_settings": if (page === "settings") renderSettings(); break;
   }
 }
@@ -412,9 +416,15 @@ const SECTIONS = [
     rows: () => [
       seg("reply_mode", "Replies", "Subtitles appear under the hologram in the corner of your screen.",
           [["both", "Voice and subtitles"], ["subtitles", "Subtitles only"], ["voice", "Voice only"]]),
-      seg("voice_engine", "Voice engine", "VoiceStudio gives realistic AI voices; it must be open.", [["windows", "Windows"], ["voicestudio", "VoiceStudio"]], true),
-      C().voice_engine !== "voicestudio" && custom("Windows voice", "", () => [selectEl(S.options.voices, C().voice_id || "", v => setCfg({ voice_id: v }).then(() => api().test_voice()), [["", "System default"]])]),
+      seg("voice_engine", "Voice engine", "Built-in is Mirage's own AI voice, running on this PC. VoiceStudio has to be open to use it.",
+          [["windows", "Windows"], ["mirage", "Built-in"], ["voicestudio", "VoiceStudio"]], true),
+      C().voice_engine === "windows" && custom("Windows voice", "", () => [selectEl(S.options.voices, C().voice_id || "", v => setCfg({ voice_id: v }).then(() => api().test_voice()), [["", "System default"]])]),
       C().voice_engine === "voicestudio" && custom("VoiceStudio voice", "Voices you design or clone in VoiceStudio appear here.", vsCtl),
+      C().voice_engine === "mirage" && custom("Built-in voice", mvInstalled() ? "" : "Runs on this PC with no other apps. Installing downloads PyTorch and the voice model, about 6 GB.", mvCtl),
+      C().voice_engine === "mirage" && mvInstalled() && (S.mv.voices || []).length > 0 && custom("Speaking voice", "Make and manage voices below.", () => [
+        selectEl(S.mv.voices.map(v => [v.id, v.name]), C().mirage_voice || "", v => setCfg({ mirage_voice: v }, true).then(() => api().test_voice()))]),
+      C().voice_engine === "mirage" && mvInstalled() && seg("mirage_voice_quality", "Quality", "Best sounds most natural. Fast starts talking soonest.",
+          [["fast", "Fast"], ["balanced", "Balanced"], ["best", "Best"]]),
       range("voice_rate", "Speed", "", 100, 300, 5, v => v),
       range("voice_volume", "Volume", "", 0, 1, .05, v => Math.round(v * 100) + "%"),
       custom("Test", "", () => [btn("Play a test sentence", () => api().test_voice(), "gold")]),
@@ -467,6 +477,7 @@ function renderSettings() {
   p.append(h("h2", {}, sec.name));
   if (sec.intro) p.append(h("p", { class: "intro" }, sec.intro));
   for (const r of sec.rows()) if (r) p.append(r);
+  if (sec.id === "voice" && C().voice_engine === "mirage" && mvInstalled()) p.append(voiceLab());
   if (sec.id === "brain" && C().brain === "claude_code")
     p.append(h("div", { class: "note" }, "Shortcuts stay free: anything Mirage can do by itself (apps, websites, timers, reminders, to-dos, notes, weather, media keys, Roblox Studio) never reaches Claude. Add your own under Shortcuts."));
   p.scrollTop = scroll;
@@ -545,4 +556,101 @@ function vsCtl() {
   return [selectEl(voices, C().voicestudio_voice || "", v => setCfg({ voicestudio_voice: v }).then(() => api().test_voice())),
           btn("↻", () => api().refresh_options().then(() => renderSettings()), "small", "Check VoiceStudio again"),
           stateEl("vsState", vs.ok ? "Connected" : "Not reachable", vs.ok ? "ok" : "bad")];
+}
+
+/* Mirage's own voice */
+const lab = { gender: "male", age: "young adult", pitch: "low pitch", accent: "", whisper: false, name: "", previewed: false,
+              file: null, cloneName: "", transcript: "", confirmDelete: null };
+const mvInstalled = () => !!(S.mv && S.mv.installed);
+function mvCtl() {
+  const m = S.mv || {};
+  if (m.state === "installing") return [stateEl("mvState", m.detail || "Installing…", "wait")];
+  if (!m.installed) return [stateEl("mvState", m.state === "error" ? m.detail : "Not installed", m.state === "error" ? "bad" : ""),
+    btn(m.packages ? "Finish installing" : "Install", () => { S.mv.state = "installing"; S.mv.detail = "Starting…"; renderSettings(); api().install_mirage_voice(); }, "gold")];
+  if (m.state === "ready") return [stateEl("mvState", m.detail, "ok")];
+  if (m.state === "error") return [stateEl("mvState", m.detail, "bad"), btn("Try again", () => api().mv_reload())];
+  return [stateEl("mvState", m.state === "loading" ? "Loading the voice model…" : "Installed. It loads when Mirage speaks.", "wait")];
+}
+function labField(label, el) { return h("label", { class: "field" }, h("span", {}, label), el); }
+function labSelect(key, opts) {
+  return selectEl(opts, lab[key], v => { lab[key] = v; lab.previewed = false; const k = $("#labKeep"); if (k) k.disabled = true; });
+}
+function labInput(key, placeholder, multiline = false) {
+  const i = h(multiline ? "textarea" : "input", multiline ? { placeholder, rows: 3 } : { type: "text", placeholder });
+  i.value = lab[key];
+  i.addEventListener("input", () => { lab[key] = i.value; });
+  return i;
+}
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+function voiceLab() {
+  const m = S.mv, o = m.options || {};
+  const box = h("div", { class: "lab" });
+  // your voices
+  box.append(h("h2", { class: "sec" }, "Your voices"));
+  const list = h("div", { class: "voices" });
+  for (const v of m.voices || []) {
+    const using = v.id === C().mirage_voice;
+    const how = v.source === "VoiceStudio" ? "From VoiceStudio" : v.kind === "clone" ? "Cloned from a recording" : "Designed from a description";
+    const nameEl = h("b", { title: "Click to rename", tabindex: 0 }, v.name);
+    nameEl.addEventListener("click", () => {
+      const i = h("input", { type: "text" }); i.value = v.name;
+      const done = () => api().mv_rename(v.id, i.value).then(st => { S.mv = st; renderSettings(); });
+      i.addEventListener("keydown", e => { if (e.key === "Enter") done(); if (e.key === "Escape") renderSettings(); });
+      i.addEventListener("blur", done);
+      nameEl.replaceWith(i); i.focus(); i.select();
+    });
+    const del = lab.confirmDelete === v.id
+      ? btn("Delete for good", () => api().mv_delete(v.id).then(r => { lab.confirmDelete = null; Object.assign(S, r); renderSettings(); }), "small danger")
+      : btn("Delete", () => { lab.confirmDelete = v.id; renderSettings(); }, "small");
+    list.append(h("div", { class: "voice" + (using ? " on" : "") },
+      h("div", { class: "who" }, nameEl, h("small", {}, how)),
+      btn("Play", () => api().mv_play(v.id), "small", "Play " + v.name),
+      using ? h("span", { class: "tag" }, "Speaking") : btn("Use", () => setCfg({ mirage_voice: v.id }, true).then(() => api().test_voice()), "small"),
+      del));
+  }
+  if (!(m.voices || []).length) list.append(h("p", { class: "muted" }, m.state === "ready" ? "No voices yet. Make one below." : "Your voices appear here once the voice model has loaded."));
+  box.append(list);
+
+  // make a new one
+  box.append(h("h2", { class: "sec" }, "Make a new voice"));
+  const cards = h("div", { class: "cards" });
+  // 1. describe
+  const keep = btn("Keep this voice", () => api().mv_save_design(lab.name || "My voice"), "", null, "labKeep");
+  keep.disabled = !lab.previewed;
+  cards.append(h("section", { class: "card" },
+    h("h3", {}, "Describe it"),
+    h("p", { class: "muted" }, "Pick what the voice should sound like. Each listen is a new take; keep the one you like."),
+    h("div", { class: "fields" },
+      labField("Voice", labSelect("gender", (o.gender || []).map(x => [x, cap(x)]))),
+      labField("Age", labSelect("age", (o.age || []).map(x => [x, cap(x)]))),
+      labField("Pitch", labSelect("pitch", (o.pitch || []).map(x => [x, cap(x.replace(" pitch", ""))]))),
+      labField("Accent", labSelect("accent", [["", "No accent"], ...(o.accent || []).map(x => [x, cap(x.replace(" accent", ""))])])),
+      labField("Whisper", toggleEl(lab.whisper, v => { lab.whisper = v; lab.previewed = false; const k = $("#labKeep"); if (k) k.disabled = true; }))),
+    h("div", { class: "acts" },
+      btn("Listen", () => api().mv_preview([lab.gender, lab.age, lab.pitch, lab.accent, lab.whisper ? "whisper" : ""].filter(Boolean).join(", ")), "gold")),
+    h("div", { class: "acts" }, labInput("name", "Name, e.g. Six-eared Macaque"), keep),
+    stateEl("mvDesignState")));
+  // 2. clone
+  const fileLbl = h("span", { class: "file" }, lab.file ? lab.file.split(/[\\/]/).pop() : "No recording chosen");
+  cards.append(h("section", { class: "card" },
+    h("h3", {}, "Clone a recording"),
+    h("p", { class: "muted" }, "5 to 15 seconds of one person talking clearly, with no music. WAV, MP3, FLAC or OGG."),
+    h("div", { class: "acts" }, btn("Choose recording…", () => api().mv_pick_file().then(f => { if (f) { lab.file = f; if (!lab.cloneName) lab.cloneName = f.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""); renderSettings(); } })), fileLbl),
+    labField("Name", labInput("cloneName", "Name")),
+    labField("What's said in it", labInput("transcript", "Optional. Leave empty and Whisper writes it down.", true)),
+    h("div", { class: "acts" }, btn("Make voice", () => api().mv_save_clone(lab.file || "", lab.cloneName, lab.transcript), "gold")),
+    stateEl("mvCloneState")));
+  // 3. VoiceStudio
+  const vs = h("section", { class: "card" }, h("h3", {}, "From VoiceStudio"),
+    h("p", { class: "muted" }, "Voices you made in VoiceStudio. VoiceStudio doesn't need to be open."));
+  const have = new Set((m.voices || []).map(v => v.vs_id).filter(Boolean));
+  const vsList = h("div", { class: "vslist" });
+  for (const v of m.vs || []) vsList.append(h("div", {},
+    h("span", {}, v.name, v.demo ? h("small", { class: "muted" }, " sample") : null),
+    btn(have.has(v.vs_id) ? "Bring over again" : "Bring over", () => api().mv_import(v.vs_id), "small")));
+  if (!(m.vs || []).length) vsList.append(h("p", { class: "muted" }, "No VoiceStudio voices found on this PC."));
+  vs.append(vsList, stateEl("mvImportState"));
+  cards.append(vs);
+  box.append(cards);
+  return box;
 }
