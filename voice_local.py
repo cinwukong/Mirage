@@ -147,21 +147,46 @@ def nvidia_info(cached=False):
     return _nvidia_cache
 
 
+def _driver_cuda():
+    """The CUDA version the installed NVIDIA driver supports, asked from the driver itself."""
+    try:
+        import ctypes
+        lib = ctypes.WinDLL("nvcuda.dll") if sys.platform.startswith("win") else ctypes.CDLL("libcuda.so.1")
+        v = ctypes.c_int(0)
+        if lib.cuDriverGetVersion(ctypes.byref(v)) == 0 and v.value > 0:
+            return v.value // 1000 + (v.value % 1000) / 100  # 13000 -> 13.0, 12080 -> 12.8
+    except Exception:
+        pass
+    return None
+
+
+NVIDIA_NOTE = ""  # what nvidia-smi said, for the log
+
+
 def _nvidia_query():
+    global NVIDIA_NOTE
+    cuda = _driver_cuda()
     exe = shutil.which("nvidia-smi")
     if not exe and sys.platform.startswith("win"):
         guess = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
         exe = str(guess) if guess.exists() else None
-    if not exe:
-        return None, ""
-    try:
-        out = subprocess.run([exe], capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW).stdout
-        m = re.search(r"CUDA Version:\s*([\d.]+)", out)
-        name = subprocess.run([exe, "--query-gpu=name", "--format=csv,noheader"], capture_output=True,
-                              text=True, timeout=15, creationflags=NO_WINDOW).stdout.strip().splitlines()
-        return (float(m.group(1)) if m else None), (name[0].strip() if name else "")
-    except Exception:
-        return None, ""
+    name = ""
+    if exe:
+        try:
+            q = subprocess.run([exe, "--query-gpu=name,driver_version", "--format=csv,noheader"], capture_output=True,
+                               text=True, timeout=20, creationflags=NO_WINDOW).stdout.strip().splitlines()
+            if q:
+                name = q[0].split(",")[0].strip()
+                NVIDIA_NOTE = q[0].strip()
+            if cuda is None:
+                out = subprocess.run([exe], capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW).stdout
+                m = re.search(r"CUDA[ A-Za-z]*Version\s*:\s*(\d+\.\d+)", out)
+                cuda = float(m.group(1)) if m else None
+                if not m:
+                    NVIDIA_NOTE += " | " + next((l.strip(" |") for l in out.splitlines() if "Driver" in l), "")[:160]
+        except Exception as e:
+            NVIDIA_NOTE += f" | nvidia-smi: {e}"
+    return cuda, name
 
 
 def cuda_build_for(driver_cuda):
@@ -187,9 +212,13 @@ def gpu_report(torch=None):
         rep["reason"] = "No NVIDIA graphics card was found, so the voice runs on the processor."
     elif not cuda_build_for(driver_cuda):
         need = min(b[1] for b in CUDA_BUILDS)
-        rep["reason"] = (f"Your NVIDIA driver is too old for the graphics card version of PyTorch (it supports CUDA "
-                         f"{driver_cuda or 'unknown'}, and {need} or newer is needed). Update the driver in the NVIDIA app, "
-                         "then come back here.")
+        if driver_cuda is None:
+            rep["reason"] = (f"Mirage found your {gpu or 'NVIDIA card'} but couldn't tell which CUDA version its driver "
+                             "supports, so the voice runs on the processor. Updating the driver in the NVIDIA app usually helps.")
+        else:
+            rep["reason"] = (f"Your NVIDIA driver is too old for the graphics card version of PyTorch (it supports CUDA "
+                             f"{driver_cuda}, and {need} or newer is needed). Update the driver in the NVIDIA app, "
+                             "then restart Mirage.")
     elif torch is not None and not rep["torch_cuda"]:
         rep["reason"] = f"PyTorch was installed without graphics card support. Switch to use your {gpu or 'NVIDIA card'}."
         rep["can_switch"] = True
@@ -257,7 +286,7 @@ def install(progress=lambda msg: None, log=lambda msg: None):
     progress("Checking your graphics card…")
     cuda, gpu = nvidia_info()
     have, have_cuda = torch_info()
-    log(f"Voice install: NVIDIA card {gpu or 'not found'} (driver CUDA {cuda}); PyTorch {have or 'not installed'}"
+    log(f"Voice install: NVIDIA card {gpu or 'not found'} (driver CUDA {cuda}; {NVIDIA_NOTE}); PyTorch {have or 'not installed'}"
         f"{' with' if have_cuda else ' without'} graphics card support; Python {sys.version.split()[0]}")
 
     if not have or (cuda and not have_cuda):
@@ -755,7 +784,7 @@ class LocalVoice:
                 device, dtype, where = "cpu", torch.float32, "the processor"
             self.gpu_info = gpu_report(torch)
             self.log(f"Voice: PyTorch {self.gpu_info['torch']} (CUDA build {self.gpu_info['torch_cuda'] or 'none'}), "
-                     f"NVIDIA {self.gpu_info['gpu'] or 'none'} driver CUDA {self.gpu_info['driver_cuda']}")
+                     f"NVIDIA {self.gpu_info['gpu'] or 'none'} driver CUDA {self.gpu_info['driver_cuda']} ({NVIDIA_NOTE})")
             t0 = time.time()
             model = OmniVoice.from_pretrained(str(MODEL_DIR), device_map=device, dtype=dtype)
             model.eval()
