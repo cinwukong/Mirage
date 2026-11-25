@@ -335,6 +335,8 @@ function renderShortcuts() {
   box.append(t1, h("div", { class: "addrow" }, ph, act, tg, h("button", { class: "btn gold", onclick: () => {
     const p = ph.value.trim().toLowerCase().replace(/^mirage[, ]+/, ""), v = tg.value.trim();
     if (!p || !v) { toast("Fill in both the phrase and what it should do."); return; }
+    const same = vc.findIndex(c => c.phrase === p);
+    if (same >= 0) { vc.splice(same, 1); toast("Replaced your old “" + p + "” command."); }
     vc.push({ phrase: p, action: act.value, target: v });
     setCfg({ voice_commands: vc }).then(renderShortcuts);
   } }, "Add")));
@@ -363,26 +365,22 @@ function renderShortcuts() {
       } }, "Add")));
   }
 
+  // built-in commands, each group can be switched off
+  const offList = cfg.builtins_off || [];
   box.append(h("h2", { class: "sec" }, "Built-in commands"),
-    h("p", { class: "lede" }, "These never use Claude."),
-    h("div", { class: "say-list" }, [
-      ["mirage open youtube", "opens a website, app or Roblox game"],
-      ["mirage play lofi music", "YouTube or Spotify"],
-      ["mirage set a timer for 10 minutes", "timer"],
-      ["mirage remind me at 5 pm to stretch", "reminder, kept after a restart"],
-      ["mirage remember that my favourite colour is purple", "saves it to your notes"],
-      ["mirage what do you know about Bullet Train", "searches your notes"],
-      ["mirage add fix the door to my to-do list", "to-do list"],
-      ["mirage what's the weather", "weather for your city"],
-      ["mirage playtest", "Roblox Studio: also “stop playtest”, “save the game”"],
-      ["mirage play chill", "starts a playlist you saved above"],
-      ["mirage stop the music", "also “play music”, “next song”, “what's playing”"],
-      ["mirage volume up", "also mute, pause, next song"],
-      ["mirage take a screenshot", "saved in Pictures\\Mirage"],
-      ["mirage what time is it", "time and date"],
-      ["mirage show yourself", "opens this window"],
-      ["mirage shut down", "closes Mirage, not your PC"],
-    ].map(([q, d]) => h("div", {}, h("q", {}, q), h("span", {}, d)))));
+    h("p", { class: "lede" }, "These never use Claude. Turn a group off if it gets in the way: what you say then goes to your own commands or to Claude. Your own voice commands always win over these."));
+  const bl = h("div", { class: "builtins" });
+  for (const [id, name, examples] of S.builtins || []) {
+    const isOn = !offList.includes(id);
+    bl.append(h("div", { class: "builtin" + (isOn ? "" : " off") },
+      h("div", { class: "who" }, h("b", {}, name), h("small", {}, examples.map(e => "“" + e + "”").join("  "))),
+      toggleEl(isOn, v => {
+        const next = (cfg.builtins_off || []).filter(x => x !== id);
+        if (!v) next.push(id);
+        setCfg({ builtins_off: next }).then(renderShortcuts);
+      })));
+  }
+  box.append(bl);
 }
 function saveDict(key, dict) {
   if (key === "apps") { const all = S.cfg.apps || {}; all[S.system] = dict; return setCfg({ apps: all }); }

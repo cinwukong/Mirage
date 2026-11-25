@@ -107,6 +107,7 @@ DEFAULT_CONFIG = {
     "claude_model": "haiku",             # haiku (fast), sonnet (balanced), opus (smartest)
     "claude_power": False,               # let Claude Code run commands and edit files
     "voice_commands": [],                # your own shortcuts: {"phrase", "action", "target"}
+    "builtins_off": [],                  # built-in command groups you turned off (see BUILTIN_GROUPS)
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
     "update_repo": "",             # "" = use UPDATE_REPO
@@ -947,7 +948,7 @@ class Engine:
     def play(self, query, service=None):
         """Play something on YouTube or Spotify (the music setting decides unless told)."""
         name, link = self.saved_playlist(query)
-        if link:
+        if link and "spotify" not in (self.cfg.get("builtins_off") or []):
             return self.play_playlist(name, link)
         service = (service or self.cfg.get("music_service") or "youtube").lower()
         if service == "spotify":
@@ -1009,216 +1010,283 @@ class Engine:
         log(f"YOU: {text}")
         self.emit("heard", text)
         a, say = self.actions, self.voice.say
-
-        if re.fullmatch(r"(shut ?down|turn off|exit|quit|go to sleep|goodbye)( yourself| mirage)?", text):
-            say("Shutting down. Goodbye.")
-            time.sleep(2.5)
-            self.emit("quit")
-            self.stop()
-            return
-        if text in ("never mind", "nevermind", "cancel", "nothing", "stop"):
-            return
-        if re.fullmatch(r"(open|show) (your )?(settings|yourself|the app|your window|mirage|the interface)|show yourself", text):
-            self.emit("show_window")
-            return say("Here I am.")
-        if re.fullmatch(r"(mute (the |your )?(mic|microphone)|stop listening)", text):
-            say("Microphone muted. Unmute me in the app.")
-            self.set_muted(True)
-            return
-
         sk, mem = self.skills, self.memory
+        off = set(self.cfg.get("builtins_off") or [])
 
-        # ---- memory ----
+        def on(group):
+            return group not in off
+
+        # ---- your own voice commands come first, so they win over anything built in ----
+        plain = re.sub(r"[^\w\s']", "", text).strip()
         for cmd in self.cfg.get("voice_commands") or []:
             phrase = re.sub(r"[^\w\s']", "", (cmd.get("phrase") or "").lower()).strip()
-            if phrase and re.sub(r"[^\w\s']", "", text).strip() == phrase:
+            if phrase and plain == phrase:
                 return say(self.run_voice_command(cmd))
 
-        m = re.match(r"^(?:please )?(?:remember|don'?t forget|note) (?:that )?(.+)$", text)
-        if m and not text.startswith("remember to remind"):
-            mem.remember(m.group(1))
-            return say("Got it. I'll remember that.")
-        m = re.match(r"^forget (?:that |about )?(.+)$", text)
-        if m:
-            n = mem.forget(m.group(1))
-            return say("Forgotten." if n else "I couldn't find that in my memory.")
-        if re.fullmatch(r"what do you (?:remember|know)(?: about me)?", text):
-            lines = [sk.clean_md(l) for l in mem.memory_lines(3)]
-            return say("You told me: " + "; ".join(lines) + "." if lines else "You haven't asked me to remember anything yet.")
-        m = re.match(r"^(?:what do you (?:remember|know) about|what did i (?:say|tell you) about|"
-                     r"search (?:in )?my notes (?:for|about)|search notes for|look in my notes for|"
-                     r"find (?:in )?my notes(?: about)?|check my notes (?:for|about)) (.+)$", text)
-        if m:
-            if self.brain.available():
-                return say(self.brain.ask(text))
-            hits = mem.search(m.group(1), 3)
-            if not hits:
-                return say(f"I couldn't find anything about {m.group(1)} in your notes.")
-            parts = [sk.clean_md(line) for note, line in hits[:2]]
-            return say("From your notes: " + ". ".join(p.rstrip(".") for p in parts)[:320] + ".")
+        if text in ("never mind", "nevermind", "cancel", "nothing", "stop"):
+            return
+
+        # ---- Mirage itself ----
+        if on("mirage"):
+            if re.fullmatch(r"(shut ?down|exit|quit|go to sleep|goodbye)( yourself| mirage)?|turn (yourself|mirage) off|"
+                            r"turn off (yourself|mirage)", text):
+                say("Shutting down. Goodbye.")
+                time.sleep(2.5)
+                self.emit("quit")
+                self.stop()
+                return
+            if re.fullmatch(r"(open|show) (your )?(settings|yourself|the app|your window|mirage|the interface)|show yourself", text):
+                self.emit("show_window")
+                return say("Here I am.")
+            if re.fullmatch(r"(mute (the |your )?(mic|microphone)|stop listening)", text):
+                say("Microphone muted. Unmute me in the app.")
+                self.set_muted(True)
+                return
+
+        # ---- memory ----
+        if on("memory"):
+            m = re.match(r"^(?:please )?(?:remember|don'?t forget|note) (?:that )?(.+)$", text)
+            if m and not text.startswith("remember to remind"):
+                mem.remember(m.group(1))
+                return say("Got it. I'll remember that.")
+            m = re.match(r"^forget (?:that |about )?(.+)$", text)
+            if m:
+                n = mem.forget(m.group(1))
+                return say("Forgotten." if n else "I couldn't find that in my memory.")
+            if re.fullmatch(r"what do you (?:remember|know)(?: about me)?", text):
+                lines = [sk.clean_md(l) for l in mem.memory_lines(3)]
+                return say("You told me: " + "; ".join(lines) + "." if lines else "You haven't asked me to remember anything yet.")
+            m = re.match(r"^(?:what do you (?:remember|know) about|what did i (?:say|tell you) about|"
+                         r"search (?:in )?my notes (?:for|about)|search notes for|look in my notes for|"
+                         r"find (?:in )?my notes(?: about)?|check my notes (?:for|about)) (.+)$", text)
+            if m:
+                if self.brain.available():
+                    return say(self.brain.ask(text))
+                hits = mem.search(m.group(1), 3)
+                if not hits:
+                    return say(f"I couldn't find anything about {m.group(1)} in your notes.")
+                parts = [sk.clean_md(line) for note, line in hits[:2]]
+                return say("From your notes: " + ". ".join(p.rstrip(".") for p in parts)[:320] + ".")
 
         # ---- to-do list ----
-        m = re.match(r"^(?:add|put) (.+?) (?:to|on) (?:my |the )?(?:to ?do|to-do|todo)(?: list)?$", text)
-        if m:
-            mem.add_todo(m.group(1))
-            return say(f"Added {m.group(1)} to your to-do list.")
-        if re.search(r"\b(?:what'?s|what is|read|show me|tell me|go through) (?:on )?(?:my|the) (?:to ?do|to-do|todo)", text) \
-                or re.fullmatch(r"(?:my )?(?:to ?do|to-do|todo)(?: list)?", text):
-            items = mem.todos()
-            if not items:
-                return say("Your to-do list is empty.")
-            more = f", and {len(items) - 5} more" if len(items) > 5 else ""
-            return say(f"You have {len(items)} thing{'s' if len(items) != 1 else ''} to do: "
-                       + "; ".join(items[:5]) + more + ".")
-        m = re.match(r"^(?:mark|check off|tick off|cross off|complete) (.+?)(?: as done| as complete| off)?"
-                     r"(?: on my (?:to ?do|to-do|todo) list)?$", text) or re.match(r"^i (?:finished|did|completed) (.+)$", text)
-        if m:
-            done = mem.complete_todo(m.group(1))
-            return say(f"Nice. Checked off {done}." if done else "I couldn't find that on your to-do list.")
+        if on("todos"):
+            m = re.match(r"^(?:add|put) (.+?) (?:to|on) (?:my |the )?(?:to ?do|to-do|todo)(?: list)?$", text)
+            if m:
+                mem.add_todo(m.group(1))
+                return say(f"Added {m.group(1)} to your to-do list.")
+            if re.search(r"\b(?:what'?s|what is|read|show me|tell me|go through) (?:on )?(?:my|the) (?:to ?do|to-do|todo)", text) \
+                    or re.fullmatch(r"(?:my )?(?:to ?do|to-do|todo)(?: list)?", text):
+                items = mem.todos()
+                if not items:
+                    return say("Your to-do list is empty.")
+                more = f", and {len(items) - 5} more" if len(items) > 5 else ""
+                return say(f"You have {len(items)} thing{'s' if len(items) != 1 else ''} to do: "
+                           + "; ".join(items[:5]) + more + ".")
+            m = re.match(r"^(?:mark|check off|tick off|cross off|complete) (.+?)(?: as done| as complete| off)?"
+                         r"(?: on my (?:to ?do|to-do|todo) list)?$", text) or re.match(r"^i (?:finished|did|completed) (.+)$", text)
+            if m:
+                done = mem.complete_todo(m.group(1))
+                return say(f"Nice. Checked off {done}." if done else "I couldn't find that on your to-do list.")
+
+        # ---- timers (before reminders, so "remind me in 10 minutes" with nothing to remind is a timer) ----
+        if on("timers") and re.search(r"\b(set (a )?timer|timer for|start a timer)\b|^remind me in [\w\s]+$", text) \
+                and not re.search(r"\bremind me in .+ (to|that|about) ", text):
+            secs = parse_duration(text)
+            if secs <= 0:
+                return say("How long should the timer be?")
+            return say(a.set_timer(secs))
 
         # ---- reminders ----
-        if re.search(r"\b(?:what are|list|read|tell me) (?:all )?my reminders\b|\bdo i have any reminders\b", text):
-            items = self.reminders.upcoming()
-            if not items:
-                return say("You have no reminders.")
-            parts = [f"{r['text']} {sk.say_time(datetime.fromisoformat(r['when']))}" for r in items[:4]]
-            return say("Your reminders: " + "; ".join(parts) + ".")
-        if re.search(r"\b(?:cancel|clear|delete|remove) (?:all )?(?:of )?my reminders\b", text):
-            n = self.reminders.clear()
-            return say(f"Cleared {n} reminder{'s' if n != 1 else ''}." if n else "You had no reminders.")
-        if re.search(r"\bremind me\b", text):
-            when, rest = sk.parse_when(text)
-            what = re.sub(r"^.*?\bremind me\b\s*", "", rest)
-            what = re.sub(r"^(?:to|that|about|of)\s+", "", what).strip() or "your reminder"
-            what = re.sub(r"\bmy\b", "your", what)
-            if when is None:
-                return say("When should I remind you? Say for example: remind me at 5 pm to stretch.")
-            self.reminders.add(when, what)
-            self.emit("reminders_changed")
-            return say(f"Okay, I'll remind you {sk.say_time(when)}.")
+        if on("reminders"):
+            if re.search(r"\b(?:what are|list|read|tell me) (?:all )?my reminders\b|\bdo i have any reminders\b", text):
+                items = self.reminders.upcoming()
+                if not items:
+                    return say("You have no reminders.")
+                parts = [f"{r['text']} {sk.say_time(datetime.fromisoformat(r['when']))}" for r in items[:4]]
+                return say("Your reminders: " + "; ".join(parts) + ".")
+            if re.search(r"\b(?:cancel|clear|delete|remove) (?:all )?(?:of )?my reminders\b", text):
+                n = self.reminders.clear()
+                return say(f"Cleared {n} reminder{'s' if n != 1 else ''}." if n else "You had no reminders.")
+            if re.match(r"^(?:please )?remind me\b", text):
+                when, rest = sk.parse_when(text)
+                what = re.sub(r"^.*?\bremind me\b\s*", "", rest)
+                what = re.sub(r"^(?:to|that|about|of)\s+", "", what).strip() or "your reminder"
+                what = re.sub(r"\bmy\b", "your", what)
+                if when is None:
+                    return say("When should I remind you? Say for example: remind me at 5 pm to stretch.")
+                self.reminders.add(when, what)
+                self.emit("reminders_changed")
+                return say(f"Okay, I'll remind you {sk.say_time(when)}.")
 
-        # ---- screen ----
-        if re.search(r"\b(?:what'?s|what is) on (?:my|the) screen\b|\blook at (?:my|the|this) screen\b|"
-                     r"\bwhat am i looking at\b|\b(?:read|check|see) (?:my|the) screen\b|\bon my screen\b", text):
+        # ---- Roblox Studio ----
+        if on("roblox"):
+            if re.fullmatch(r"(?:start |run |begin )?(?:a )?play ?test(?:ing)?(?: the game| my game)?|test (?:the|my) game", text):
+                return say(sk.studio_key("f5") or "Starting playtest.")
+            if re.fullmatch(r"(?:stop|end|exit) (?:the )?play ?test(?:ing)?", text):
+                return say(sk.studio_key("shift", "f5") or "Stopped.")
+            if re.fullmatch(r"save (?:the |my )?(?:game|place)(?: in studio)?", text):
+                return say(sk.studio_key("ctrl", "s") or "Saved.")
+
+        # ---- Spotify ----
+        if on("spotify"):
+            import spotify
+            m = re.fullmatch(r"(play|put on|start|switch to|change to|go to|open|"
+                             r"(?:switch|change) (?:the )?(?:playlist|music) to) (.+?)", text)
+            if m:
+                verb, target = m.group(1), m.group(2).strip()
+                # "open discord" is the app even if a playlist is called discord
+                known = verb in ("open", "start", "go to") and (
+                    target in {k.lower() for k in self.cfg.get("websites", {})}
+                    or target in {k.lower() for k in self.cfg.get("apps", {}).get(SYSTEM, {})}
+                    or target in {k.lower() for k in self.cfg.get("roblox_games", {})})
+                name, link = self.saved_playlist(target)
+                if link and not known:
+                    return say(self.play_playlist(name, link))
+                if re.search(r"\bplaylist\b", text) and name and not known:
+                    return say(spotify.search(name + " playlist").rstrip(".") + ". Save it under Shortcuts, "
+                               "Spotify playlists, and next time I'll start it for you.")
+            if re.fullmatch(r"(?:stop|pause|stop playing|pause playing)(?: the| my)? (?:music|song|spotify|playlist)|"
+                            r"(?:turn off|shut off) (?:the )?music", text):
+                if spotify.playing() is False:
+                    return say("It's already paused.")
+                r = a.media("pause")
+                return say("Paused." if r == "Done." else r)
+            if re.fullmatch(r"(?:play|resume|start|unpause|continue)(?: the| my)? (?:music|song|spotify|playlist)|play spotify", text):
+                state = spotify.playing()
+                if state is True:
+                    return say("It's already playing.")
+                if state is None and self.cfg.get("music_service") == "spotify" and SYSTEM == "Windows":
+                    os.startfile("spotify:")
+                    if not spotify._wait_until(spotify.running, 15):
+                        return say("Spotify didn't open.")
+                    time.sleep(2.5)
+                r = a.media("play")
+                return say("Playing." if r == "Done." else r)
+            if re.fullmatch(r"what(?:'s| is) (?:playing|this song)|what song is (?:this|playing)|"
+                            r"which song is this|what(?:'s| is) the song", text):
+                song = spotify.now_playing()
+                return say(f"This is {song}." if song else "Nothing's playing on Spotify.")
+
+        # ---- play songs and videos ----
+        if on("play"):
+            m = re.match(r"^(?:play|put on) (.+?)(?: on (youtube|spotify))?$", text)
+            if m and m.group(1) not in ("music",) and not text.startswith(("play test", "playtest")):
+                return say(self.play(m.group(1), m.group(2)))
+
+        # ---- media keys ----
+        if on("media"):
+            m = re.match(r"^(?:please )?(?:turn (?:the )?)?(volume up|volume down|louder|quieter|turn it up|turn it down|"
+                         r"unmute|mute|next song|next track|skip(?: this)?(?: song| track)?|previous song|previous track|"
+                         r"last song|pause|resume|unpause)\b", text)
+            if m:
+                word = m.group(1)
+                action = ("volume up" if word in ("volume up", "louder", "turn it up") else
+                          "volume down" if word in ("volume down", "quieter", "turn it down") else
+                          "next" if word.startswith(("next", "skip")) else
+                          "previous" if word.startswith(("previous", "last")) else
+                          "resume" if word == "unpause" else word)
+                return say(a.media(action))
+
+        # ---- searching ----
+        if on("search"):
+            m = re.match(r"^(?:search youtube for|youtube) (.+)$", text) or re.match(r"^search (?:for )?(.+) on youtube$", text)
+            if m:
+                return say(a.youtube(m.group(1)))
+            m = re.match(r"^(?:search|google|look up|search for|search google for) (.+)$", text)
+            if m:
+                return say(a.google(m.group(1)))
+
+        # ---- opening apps, websites and games ----
+        if on("open"):
+            m = re.match(r"^(?:open|launch|start|go to) (.+)$", text)
+            if m:
+                target = m.group(1).strip()
+                game = re.sub(r"^(?:my game|the game|game) |(?: in studio| in roblox studio)$", "", target).strip()
+                reply = sk.open_roblox_game(self.cfg, game) or a.open_website(target) or a.open_app(target)
+                if reply or not self.brain.available():
+                    return say(reply or f"I don't know how to open {target}. Add it on the Shortcuts page.")
+
+        # ---- typing ----
+        if on("typing"):
+            m = re.match(r"^(?:type|write) (.+)$", text)
+            if m:
+                return say(a.type_text(m.group(1)))
+
+        # ---- looking at the screen ----
+        if on("screen") and re.search(r"\b(?:what'?s|what is) on (?:my|the) screen\b|\blook at (?:my|the|this) screen\b|"
+                                      r"\bwhat am i looking at\b|\b(?:read|check|see) (?:my|the) screen\b", text):
             if not self.brain.available():
-                return say("I need my AI brain to look at your screen. Add an API key in settings.")
+                return say("I need my AI brain to look at your screen. Set it up under Settings, Brain.")
             return say(self.brain.ask(text, screen=True))
 
         # ---- weather ----
-        if re.search(r"\bweather\b|\btemperature (?:outside|today|tomorrow)\b|\bhow (?:hot|cold|warm) is it\b|"
-                     r"\b(?:will|is) it (?:going to )?(?:rain|snow)\b|\bdo i need (?:an umbrella|a jacket)\b", text):
+        if on("weather") and re.search(r"^(?:what'?s|what is|how'?s|how is|tell me) (?:the )?(?:weather|temperature)\b|"
+                                       r"^weather\b|\bweather (?:today|tomorrow|like|forecast)\b|\bhow (?:hot|cold|warm) is it\b|"
+                                       r"\b(?:will|is) it (?:going to )?(?:rain|snow)\b|\bdo i need (?:an umbrella|a jacket)\b", text) \
+                and not re.search(r"\bin (?!the |a |an )[a-z]", text) and not re.search(r"\bnext (?:week|month)\b", text):
+            # weather somewhere else, or further ahead, goes to Claude
             try:
                 return say(sk.weather_report(self.cfg, "tomorrow" if "tomorrow" in text else "today"))
             except Exception as e:
                 log(f"Weather failed: {e}")
                 return say("I couldn't get the weather right now.")
 
-        # ---- Roblox Studio ----
-        if re.fullmatch(r"(?:start |run |begin )?(?:a )?play ?test(?:ing)?(?: the game| my game)?|test (?:the|my) game", text):
-            return say(sk.studio_key("f5") or "Starting playtest.")
-        if re.fullmatch(r"(?:stop|end|exit) (?:the )?play ?test(?:ing)?", text):
-            return say(sk.studio_key("shift", "f5") or "Stopped.")
-        if re.fullmatch(r"save (?:the |my )?(?:game|place)(?: in studio)?", text):
-            return say(sk.studio_key("ctrl", "s") or "Saved.")
+        # ---- time and date ----
+        if on("time"):
+            if re.fullmatch(r"(?:what time is it|what'?s the time|what is the time|tell me the time|time)(?: now| right now)?", text):
+                return say(a.tell_time())
+            if re.fullmatch(r"(?:what day is it|what'?s the date|what is the date|what'?s today|what day is today|"
+                            r"what'?s today'?s date|date)(?: today)?", text):
+                return say(a.tell_date())
 
-        # ---- Spotify ----
-        import spotify
-        m = re.fullmatch(r"(?:play|put on|start|switch to|change to|go to|open|"
-                         r"(?:switch|change) (?:the )?(?:playlist|music) to) (.+?)", text)
-        if m:
-            name, link = self.saved_playlist(m.group(1))
-            if link:
-                return say(self.play_playlist(name, link))
-            if re.search(r"\bplaylist\b", text) and name:
-                return say(spotify.search(name + " playlist").rstrip(".") + ". Save it under Shortcuts, "
-                           "Spotify playlists, and next time I'll start it for you.")
-        if re.fullmatch(r"(?:stop|pause|stop playing|pause playing)(?: the| my)? (?:music|song|spotify|playlist)|"
-                        r"pause|(?:turn off|shut off) (?:the )?music", text):
-            # a bare "pause" may be for a video, so only the music commands check Spotify first
-            if text != "pause" and spotify.playing() is False:
-                return say("It's already paused.")
-            r = a.media("pause")
-            return say("Paused." if r == "Done." else r)
-        if re.fullmatch(r"(?:play|resume|start|unpause|continue)(?: the| my)? (?:music|song|spotify|playlist)|"
-                        r"resume|unpause|play spotify", text):
-            state = spotify.playing()
-            if state is True and text not in ("resume", "unpause"):
-                return say("It's already playing.")
-            if state is None and self.cfg.get("music_service") == "spotify" and SYSTEM == "Windows":
-                os.startfile("spotify:")
-                if not spotify._wait_until(spotify.running, 15):
-                    return say("Spotify didn't open.")
-                time.sleep(2.5)
-            r = a.media("play")
-            return say("Playing." if r == "Done." else r)
-        if re.fullmatch(r"what(?:'s| is) (?:playing|this song)|what song is (?:this|playing)|"
-                        r"which song is this|what(?:'s| is) the song", text):
-            song = spotify.now_playing()
-            return say(f"This is {song}." if song else "Nothing's playing on Spotify.")
-
-        # ---- music ----
-        m = re.match(r"^(?:play|put on) (.+?)(?: on (youtube|spotify))?$", text)
-        if m and m.group(1) not in ("music",) and not text.startswith(("play test", "playtest")):
-            return say(self.play(m.group(1), m.group(2)))
-        m = re.match(r"^(?:search youtube for|youtube) (.+)$", text) or re.match(r"^search (?:for )?(.+) on youtube$", text)
-        if m:
-            return say(a.youtube(m.group(1)))
-        m = re.match(r"^(?:search|google|look up|search for|search google for) (.+)$", text)
-        if m:
-            return say(a.google(m.group(1)))
-
-        m = re.match(r"^(?:open|launch|start|go to) (.+)$", text)
-        if m:
-            target = m.group(1).strip()
-            game = re.sub(r"^(?:my game|the game|game) |(?: in studio| in roblox studio)$", "", target).strip()
-            reply = sk.open_roblox_game(self.cfg, game) or a.open_website(target) or a.open_app(target)
-            return say(reply)
-
-        if re.search(r"\b(set (a )?timer|timer for|remind me in)\b", text):
-            secs = parse_duration(text)
-            if secs <= 0:
-                return say("How long should the timer be?")
-            return say(a.set_timer(secs))
-
-        if re.search(r"\bwhat time\b|\bthe time\b", text):
-            return say(a.tell_time())
-        if re.search(r"\bwhat day\b|\bthe date\b|\bwhat'?s today\b", text):
-            return say(a.tell_date())
-
-        for phrase, action in (("volume up", "volume up"), ("louder", "volume up"),
-                               ("turn it up", "volume up"), ("volume down", "volume down"),
-                               ("quieter", "volume down"), ("turn it down", "volume down"),
-                               ("unmute", "unmute"), ("mute", "mute"),
-                               ("next song", "next"), ("next track", "next"), ("skip", "next"),
-                               ("previous song", "previous"), ("previous track", "previous"),
-                               ("pause", "pause"), ("resume", "resume"), ("play music", "play")):
-            if phrase in text:
-                return say(a.media(action))
-
-        if "screenshot" in text or "screen shot" in text:
+        # ---- screenshot, lock, close ----
+        if on("screenshot") and re.search(r"\b(?:take|grab|save|make) (?:a )?screen ?shot\b|^screen ?shot$", text):
             return say(a.screenshot())
-        m = re.match(r"^(?:type|write) (.+)$", text)
-        if m:
-            return say(a.type_text(m.group(1)))
-        if re.search(r"\b(lock (the |my )?(computer|pc|screen))\b", text):
-            return say(a.lock())
-        if re.search(r"\bclose (this |the )?(window|app|program)\b", text):
-            return say(a.close_window())
-        if re.fullmatch(r"(hello|hi|hey)( there)?", text):
+        if on("pc"):
+            if re.search(r"\block (?:the |my )?(?:computer|pc|screen)\b", text):
+                return say(a.lock())
+            if re.fullmatch(r"close (?:this |the )?(?:window|app|program)", text):
+                return say(a.close_window())
+
+        if on("greetings") and re.fullmatch(r"(hello|hi|hey)( there)?", text):
             return say("Hello. What can I do for you?")
 
-        m = re.match(r"^(?:who|what) (?:is|was|are|were) (?:a |an |the )?(.+)$", text) or \
-            re.match(r"^(?:tell me about|what do you know about) (.+)$", text)
-        if m and not self.brain.available():
-            try:
-                fact = sk.wiki_summary(m.group(1))
-                if fact:
-                    return say(fact)
-            except Exception as e:
-                log(f"Wikipedia failed: {e}")
+        if on("facts"):
+            m = re.match(r"^(?:who|what) (?:is|was|are|were) (?:a |an |the )?(.+)$", text) or \
+                re.match(r"^(?:tell me about|what do you know about) (.+)$", text)
+            if m and not self.brain.available():
+                try:
+                    fact = sk.wiki_summary(m.group(1))
+                    if fact:
+                        return say(fact)
+                except Exception as e:
+                    log(f"Wikipedia failed: {e}")
 
         say(self.brain.ask(text))
 
+
+# Built-in command groups, shown on the Shortcuts page where each can be turned off
+BUILTIN_GROUPS = [
+    ("mirage", "Mirage itself", ["shut down", "show yourself", "mute the mic"]),
+    ("memory", "Memory", ["remember that my favourite colour is purple", "forget about the door", "what do you know about Bullet Train"]),
+    ("todos", "To-do list", ["add fix the door to my to-do list", "what's on my to-do list", "check off fix the door"]),
+    ("timers", "Timers", ["set a timer for 10 minutes", "remind me in 5 minutes"]),
+    ("reminders", "Reminders", ["remind me at 5 pm to stretch", "what are my reminders", "clear my reminders"]),
+    ("roblox", "Roblox Studio", ["playtest", "stop playtest", "save the game"]),
+    ("spotify", "Spotify", ["play chill (a saved playlist)", "stop the music", "play music", "what's playing"]),
+    ("play", "Play songs and videos", ["play lofi beats", "play never gonna give you up on spotify"]),
+    ("media", "Media keys", ["volume up", "next song", "pause", "mute"]),
+    ("search", "Search", ["search for cheap headphones", "search youtube for roblox tutorials"]),
+    ("open", "Open apps, sites and games", ["open youtube", "open discord", "open limbless"]),
+    ("typing", "Typing", ["type hello everyone"]),
+    ("screen", "Look at the screen", ["what's on my screen"]),
+    ("weather", "Weather", ["what's the weather", "will it rain tomorrow"]),
+    ("time", "Time and date", ["what time is it", "what's the date"]),
+    ("screenshot", "Screenshots", ["take a screenshot"]),
+    ("pc", "Lock and close", ["lock the computer", "close this window"]),
+    ("greetings", "Greetings", ["hello"]),
+    ("facts", "Quick facts (when Claude is off)", ["who is Sun Wukong"]),
+]
 
 
 # --------------------------------------------------------------------------- #

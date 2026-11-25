@@ -214,6 +214,13 @@ li.done .t { color: var(--muted); text-decoration: line-through; }
 .say-list q { font: 16px/1.4 var(--serif); quotes: "“" "”"; }
 .say-list span { color: var(--muted); font-size: 13.5px; text-align: right; }
 
+.builtins { max-width: 900px; margin-bottom: 26px; }
+.builtin { display: flex; align-items: center; gap: 16px; padding: 10px 0; border-bottom: 1px solid rgba(183, 148, 255, .08); }
+.builtin .who { flex: 1; min-width: 0; }
+.builtin .who b { font-weight: 500; display: block; }
+.builtin .who small { color: var(--muted); font: 14px/1.4 var(--serif); }
+.builtin.off .who { opacity: .45; }
+
 /* settings */
 .settings { display: grid; grid-template-columns: 190px 1fr; gap: 28px; flex: 1; min-height: 0; }
 .sublist { display: flex; flex-direction: column; gap: 2px; padding-top: 4px; border-right: 1px solid var(--gold-line); padding-right: 14px; }

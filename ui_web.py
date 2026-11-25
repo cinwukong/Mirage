@@ -101,6 +101,7 @@ class Bridge:
             "options": a.options,
             "whisper": a.whisper_state(),
             "mv": a.mv_state(),
+            "builtins": [[g, n, ex] for g, n, ex in M.BUILTIN_GROUPS],
             "claude": a.claude_state(),
             "startup": get_startup(),
             "update_available": a.update_available,
