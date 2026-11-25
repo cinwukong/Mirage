@@ -27,6 +27,11 @@ hidden in the tray when you log in. Updates install from **Settings → App → 
 - **Settings**: brain, listening (microphone, wake words, Whisper), voice (Windows, Built-in or VoiceStudio),
   hologram, memory (Obsidian vault), skills (weather city, music) and app options.
 
+## Spotify
+Save playlists on the **Shortcuts** page (in Spotify: right-click a playlist → Share → Copy link to playlist).
+Then "mirage play chill" or "mirage switch to gym" opens it in the Spotify app and presses play.
+"mirage stop the music", "play music", "next song" and "what's playing" work too. No Spotify login needed.
+
 ## Mirage's own voice
 **Settings → Voice → Built-in** runs an AI voice (OmniVoice) inside Mirage, so no other app has to be
 open. Click **Install** once: it downloads PyTorch for your graphics card and the voice model, about
@@ -41,7 +46,7 @@ open. Click **Install** once: it downloads PyTorch for your graphics card and th
 - `ui_web.py` + `web/`: the window and interface
 - `mirage.py`: listening, speaking and the built-in shortcuts
 - `brains.py`: Claude Code and API-key brains, and the skills they can use
-- `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio
+- `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio; `spotify.py`: Spotify control
 - `hearing.py`: Whisper; `hologram.py`: the corner hologram; `voice_local.py`: Mirage's own voice
 - `config.json`, `memory/`, `reminders.json`, `model/` and `voices/` are kept on your PC and never uploaded.
   The voice model is stored in `%LOCALAPPDATA%\Mirage\voice_model`, outside the Mirage folder.

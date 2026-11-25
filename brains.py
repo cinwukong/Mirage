@@ -51,6 +51,9 @@ def context_block(engine, text: str) -> str:
         if notes:
             parts.append("Possibly relevant lines from the user's notes:\n"
                          + "\n".join(f"- [{n}] {sk.clean_md(l)}" for n, l in notes))
+        playlists = list((engine.cfg.get("spotify_playlists") or {}).keys())
+        if playlists:
+            parts.append("The user's saved Spotify playlists: " + ", ".join(playlists))
         todos = engine.memory.todos()[:12]
         if todos:
             parts.append("Open to-do items: " + "; ".join(todos))
@@ -139,7 +142,8 @@ TOOL_SPECS = [
     ("get_weather", "Weather for the user's city. day is 'today' or 'tomorrow'.", {"day": str}),
     ("open_website", "Open a website by name or URL in the browser.", {"site": str}),
     ("open_app", "Open an app, program or Roblox game on the PC by name.", {"name": str}),
-    ("play_media", "Play music or a video. service is 'youtube' or 'spotify' (optional).", {"query": str, "service": str}),
+    ("play_media", "Play music or a video. service is 'youtube' or 'spotify' (optional). If the user names one of "
+                   "their saved Spotify playlists, pass its name as query and it starts in Spotify.", {"query": str, "service": str}),
     ("media_control", "Media keys: 'volume up', 'volume down', 'mute', 'pause', 'play', 'next', 'previous'.",
      {"action": str}),
     ("set_timer", "Start a countdown timer.", {"seconds": int, "label": str}),

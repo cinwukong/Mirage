@@ -344,6 +344,7 @@ function renderShortcuts() {
     ["websites", "Websites", "“mirage open <name>” opens the site.", "Name", "https://…"],
     ["apps", "Apps", "A program name, the full path to an .exe, or a link like discord:", "Name", "C:\\path\\to\\app.exe"],
     ["roblox_games", "Roblox games", "The path to a .rbxl file opens it in Studio; a place ID opens its Roblox page.", "Name", "C:\\path\\to\\game.rbxl"],
+    ["spotify_playlists", "Spotify playlists", "“mirage play <name>” or “mirage switch to <name>” opens it in Spotify and starts it. In Spotify, right-click a playlist, then Share, Copy link to playlist.", "Name, e.g. chill", "https://open.spotify.com/playlist/…"],
   ];
   for (const [key, title, lede, p1, p2] of lists) {
     const dict = key === "apps" ? ((cfg.apps || {})[S.system] || {}) : (cfg[key] || {});
@@ -374,6 +375,8 @@ function renderShortcuts() {
       ["mirage add fix the door to my to-do list", "to-do list"],
       ["mirage what's the weather", "weather for your city"],
       ["mirage playtest", "Roblox Studio: also “stop playtest”, “save the game”"],
+      ["mirage play chill", "starts a playlist you saved above"],
+      ["mirage stop the music", "also “play music”, “next song”, “what's playing”"],
       ["mirage volume up", "also mute, pause, next song"],
       ["mirage take a screenshot", "saved in Pictures\\Mirage"],
       ["mirage what time is it", "time and date"],

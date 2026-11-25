@@ -102,6 +102,7 @@ DEFAULT_CONFIG = {
     "weather_location": None,            # filled in automatically from weather_city
     "music_service": "youtube",          # what "play ..." uses: youtube or spotify
     "roblox_games": {},                  # name -> .rbxl file path or place id
+    "spotify_playlists": {},             # name -> Spotify link (playlist, album, artist…)
     "brain": "claude_code",              # "claude_code", "api" or "off"
     "claude_model": "haiku",             # haiku (fast), sonnet (balanced), opus (smartest)
     "claude_power": False,               # let Claude Code run commands and edit files
@@ -920,8 +921,23 @@ class Engine:
                 self.awaiting_until = 0
                 self.cmd_q.put(("audio", pcm, text, False) if self._whisper_on() else text)
 
+    def saved_playlist(self, name):
+        lists = {k.lower(): v for k, v in (self.cfg.get("spotify_playlists") or {}).items()}
+        name = re.sub(r"^(?:my|the) |(?: playlist| on spotify)+$", "", name.lower().strip()).strip()
+        return (name, lists[name]) if name in lists else (name, None)
+
+    def play_playlist(self, name, link):
+        import spotify
+        uri = spotify.to_uri(link)
+        if not uri:
+            return f"The Spotify link saved for {name} doesn't look right. Copy it again with Share, Copy link."
+        return spotify.open_and_play(uri) or f"Playing {name}."
+
     def play(self, query, service=None):
         """Play something on YouTube or Spotify (the music setting decides unless told)."""
+        name, link = self.saved_playlist(query)
+        if link:
+            return self.play_playlist(name, link)
         service = (service or self.cfg.get("music_service") or "youtube").lower()
         if service == "spotify":
             try:
@@ -1093,6 +1109,41 @@ class Engine:
             return say(sk.studio_key("shift", "f5") or "Stopped.")
         if re.fullmatch(r"save (?:the |my )?(?:game|place)(?: in studio)?", text):
             return say(sk.studio_key("ctrl", "s") or "Saved.")
+
+        # ---- Spotify ----
+        import spotify
+        m = re.fullmatch(r"(?:play|put on|start|switch to|change to|go to|open|"
+                         r"(?:switch|change) (?:the )?(?:playlist|music) to) (.+?)", text)
+        if m:
+            name, link = self.saved_playlist(m.group(1))
+            if link:
+                return say(self.play_playlist(name, link))
+            if re.search(r"\bplaylist\b", text) and name:
+                return say(spotify.search(name + " playlist").rstrip(".") + ". Save it under Shortcuts, "
+                           "Spotify playlists, and next time I'll start it for you.")
+        if re.fullmatch(r"(?:stop|pause|stop playing|pause playing)(?: the| my)? (?:music|song|spotify|playlist)|"
+                        r"pause|(?:turn off|shut off) (?:the )?music", text):
+            # a bare "pause" may be for a video, so only the music commands check Spotify first
+            if text != "pause" and spotify.playing() is False:
+                return say("It's already paused.")
+            r = a.media("pause")
+            return say("Paused." if r == "Done." else r)
+        if re.fullmatch(r"(?:play|resume|start|unpause|continue)(?: the| my)? (?:music|song|spotify|playlist)|"
+                        r"resume|unpause|play spotify", text):
+            state = spotify.playing()
+            if state is True and text not in ("resume", "unpause"):
+                return say("It's already playing.")
+            if state is None and self.cfg.get("music_service") == "spotify" and SYSTEM == "Windows":
+                os.startfile("spotify:")
+                if not spotify._wait_until(spotify.running, 15):
+                    return say("Spotify didn't open.")
+                time.sleep(2.5)
+            r = a.media("play")
+            return say("Playing." if r == "Done." else r)
+        if re.fullmatch(r"what(?:'s| is) (?:playing|this song)|what song is (?:this|playing)|"
+                        r"which song is this|what(?:'s| is) the song", text):
+            song = spotify.now_playing()
+            return say(f"This is {song}." if song else "Nothing's playing on Spotify.")
 
         # ---- music ----
         m = re.match(r"^(?:play|put on) (.+?)(?: on (youtube|spotify))?$", text)
