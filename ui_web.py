@@ -86,6 +86,10 @@ class Bridge:
     def get_state(self):
         a = self._app
         e = a.engine
+        # messages already waiting in the queue are part of "messages" below; don't send them twice
+        kept = [ev for ev in list(a.events) if ev[0] not in ("heard", "reply", "system")]
+        a.events.clear()
+        a.events.extend(kept)
         return {
             "version": M.read_version(),
             "system": M.SYSTEM,
