@@ -49,7 +49,9 @@ STATUS_STYLE = {
 }
 
 FONT = "Segoe UI" if M.SYSTEM == "Windows" else "Helvetica"
-ICON_PATH = M.BASE_DIR / "mirage.ico"
+ASSETS = M.BASE_DIR / "assets"
+ICON_PATH = ASSETS / "mirage.ico"
+LOGO_COLOR = "#b98cff"  # purple from the headband logo
 
 
 def mix(c1: str, c2: str, f: float) -> str:
@@ -61,6 +63,8 @@ def mix(c1: str, c2: str, f: float) -> str:
 
 def make_icon_image(size=64):
     from PIL import Image, ImageDraw
+    if (ASSETS / "icon.png").exists():
+        return Image.open(ASSETS / "icon.png").convert("RGBA").resize((size, size), Image.LANCZOS)
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     s = size
@@ -213,7 +217,15 @@ class MirageApp(ctk.CTk):
     # ------------------------------------------------------------------ #
     def _set_window_icon(self):
         try:
+            if M.SYSTEM == "Windows":
+                # Give Mirage its own taskbar identity so Windows shows Mirage's icon, not Python's
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("cinwukong.mirage")
+        except Exception:
+            pass
+        try:
             if not ICON_PATH.exists():
+                ASSETS.mkdir(exist_ok=True)
                 make_icon_image(256).save(ICON_PATH, sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
             if M.SYSTEM == "Windows":
                 self.iconbitmap(str(ICON_PATH))
@@ -228,10 +240,21 @@ class MirageApp(ctk.CTk):
         bar.grid_propagate(False)
         bar.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(bar, text="MIRAGE", text_color=ACCENT,
-                     font=ctk.CTkFont(FONT, 26, "bold")).grid(row=0, column=0, padx=24, pady=(28, 0), sticky="w")
+        brand = ctk.CTkFrame(bar, fg_color="transparent")
+        brand.grid(row=0, column=0, padx=22, pady=(26, 0), sticky="w")
+        try:
+            from PIL import Image
+            logo = Image.open(ASSETS / "logo.png")
+            w = 170
+            self._logo_img = ctk.CTkImage(light_image=logo, dark_image=logo,
+                                          size=(w, int(w * logo.height / logo.width)))
+            ctk.CTkLabel(brand, text="", image=self._logo_img).pack(anchor="w", pady=(0, 8))
+        except Exception as e:
+            M.log(f"Logo not loaded: {e}")
+        ctk.CTkLabel(brand, text="MIRAGE", text_color=LOGO_COLOR,
+                     font=ctk.CTkFont(FONT, 26, "bold")).pack(anchor="w")
         ctk.CTkLabel(bar, text="your voice assistant", text_color=MUTED,
-                     font=ctk.CTkFont(FONT, 12)).grid(row=1, column=0, padx=24, pady=(0, 26), sticky="w")
+                     font=ctk.CTkFont(FONT, 12)).grid(row=1, column=0, padx=24, pady=(0, 22), sticky="w")
 
         self.nav_buttons = {}
         for i, (key, label) in enumerate((("home", "Home"), ("settings", "Settings"), ("shortcuts", "Shortcuts"))):

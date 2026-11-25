@@ -3,7 +3,7 @@ config.json
 model/
 model.zip
 mirage.log
-mirage.ico
+/mirage.ico
 __pycache__/
 *.tmp
 *.new
