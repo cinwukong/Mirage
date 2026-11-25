@@ -89,6 +89,8 @@ DEFAULT_CONFIG = {
     "hologram_corner": "bottom-right",   # top-left, top-right, bottom-left, bottom-right
     "hologram_size": "medium",           # small, medium, large
     "hologram_style": "logo",            # "logo" (purple headband) or "orb"
+    "subtitles_enabled": True,           # show Mirage's replies as text under the hologram
+    "subtitles_show_you": False,         # also show what you said
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
     "update_repo": "",             # "" = use UPDATE_REPO

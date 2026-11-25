@@ -50,6 +50,8 @@ class Hologram:
         self.appear_t = 0.0
         self.hide_at = None
         self.scale = 1.0
+        self.sub_text, self.sub_who, self.sub_until = "", "mirage", 0.0
+        self.scaling = 1.0
         self.win = None
         self._logo_src = None
         self._logo_frames = {}   # (size, step) -> PhotoImage
@@ -111,11 +113,16 @@ class Hologram:
         except Exception:
             scaling = 1.0
         scaling = max(1.0, scaling)
+        self.scaling = scaling
         size = int(SIZES.get(cfg.get("hologram_size", "medium"), 210) * scaling)
         if self._use_logo():
-            w, h = int(size * 1.55), int(size * 0.95)
+            art_w, art_h = int(size * 1.55), int(size * 0.95)
         else:
-            w = h = size
+            art_w = art_h = size
+        w, h = art_w, art_h
+        if cfg.get("subtitles_enabled", True):
+            w = max(art_w, int(440 * scaling))
+            h = art_h + int(78 * scaling)
         margin = int(24 * scaling)
         taskbar = int(56 * scaling)
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
@@ -123,7 +130,9 @@ class Hologram:
         x = margin if "left" in corner else sw - w - margin
         y = margin if "top" in corner else sh - h - margin - taskbar
         self.win.geometry(f"{w}x{h}+{x}+{y}")
-        self.size, self.w, self.h = size, w, h
+        self.size, self.w, self.h = size, art_w, art_h   # w/h = the animated part
+        self.win_w, self.win_h = w, h
+        self.ox = (w - art_w) / 2                          # centre the animation horizontally
 
     def _use_logo(self):
         return self._logo_src is not None and self.get_cfg().get("hologram_style", "logo") == "logo"
@@ -153,18 +162,40 @@ class Hologram:
             if not self.visible:
                 self._show()
         elif self.visible and self.hide_at is None:
-            self.hide_at = time.time() + 1.2  # linger a moment, then fade out
+            # linger a moment (longer if a subtitle is still being read), then fade out
+            self.hide_at = max(time.time() + 1.2, self.sub_until)
+
+    def set_subtitle(self, text, who="mirage"):
+        """Show a line of text under the hologram for long enough to read it."""
+        cfg = self.get_cfg()
+        if not cfg.get("hologram_enabled", True) or not cfg.get("subtitles_enabled", True) or not text:
+            return
+        now = time.time()
+        read = 1.8 + 0.055 * len(text) if who == "mirage" else 1.2 + 0.03 * len(text)
+        self.sub_text, self.sub_who = text, who
+        self.sub_until = now + min(14.0, read)
+        if not self.visible:
+            self._show()
+        if self.status not in ACTIVE:
+            self.hide_at = self.sub_until
+        elif self.hide_at is not None:
+            self.hide_at = max(self.hide_at, self.sub_until)
 
     def set_level(self, level):
         self.level = level
 
     def preview(self, seconds=3.0):
         """Show briefly (used by the settings page)."""
-        self._place()
+        self._hide_now()
         self._show()
+        if self.get_cfg().get("subtitles_enabled", True):
+            self.sub_text, self.sub_who = "This is how my subtitles look.", "mirage"
+            self.sub_until = time.time() + seconds
         self.hide_at = time.time() + seconds
 
     def _show(self):
+        if self.visible:
+            return
         self._place()
         self.visible = True
         self.appear_t = time.time()
@@ -175,6 +206,7 @@ class Hologram:
     def _hide_now(self):
         self.visible = False
         self.hide_at = None
+        self.sub_text = ""
         if self.win is not None:
             self.win.withdraw()
 
@@ -203,6 +235,7 @@ class Hologram:
                         self._draw_logo(now, k)
                     else:
                         self._draw(now, k)
+                    self._draw_subtitle(now)
         except tk.TclError:
             return
         self.root.after(33, self._tick)
@@ -223,7 +256,7 @@ class Hologram:
         c = self.canvas
         c.delete("all")
         W, H = self.w, self.h
-        cx, cy = W / 2, H * 0.43
+        cx, cy = self.ox + W / 2, H * 0.43
         color = COLORS.get(self.status, COLORS["listening"])
         bright = _mix(color, "#ffffff", 0.45)
         dim = _dim(color, 0.45)
@@ -262,11 +295,30 @@ class Hologram:
             h = H * (0.015 + 0.11 * lv * wob * (0.35 + 0.65 * edge))
             c.create_line(x, base_y - h, x, base_y + h, fill=color, width=bw, capstyle="round")
 
+    def _draw_subtitle(self, t):
+        if not self.sub_text or t > self.sub_until + 0.5:
+            return
+        c = self.canvas
+        sc = self.scaling
+        font = ("Segoe UI" if sys.platform.startswith("win") else "Helvetica", int(12 * sc) or 12, "bold")
+        text = self.sub_text if len(self.sub_text) <= 220 else self.sub_text[:217] + "…"
+        if self.sub_who == "you":
+            text, fill = "You: " + text, "#cbd5e1"
+        else:
+            fill = "#f3e8ff"
+        x, y = self.win_w / 2, self.h + 4 * sc
+        width = self.win_w - 24 * sc
+        # dark outline so the text is readable on any background
+        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1), (-1, 1), (1, -1)):
+            c.create_text(x + dx, y + dy, text=text, width=width, anchor="n", justify="center",
+                          font=font, fill="#0b0b14")
+        c.create_text(x, y, text=text, width=width, anchor="n", justify="center", font=font, fill=fill)
+
     def _draw(self, t, scale):
         c = self.canvas
         c.delete("all")
         s = self.size
-        cx = cy = s / 2
+        cx, cy = self.ox + s / 2, s / 2
         R = s * 0.40 * scale
         color = COLORS.get(self.status, COLORS["listening"])
         bright = _mix(color, "#ffffff", 0.45)

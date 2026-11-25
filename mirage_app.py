@@ -455,13 +455,13 @@ class MirageApp(ctk.CTk):
         page.grid_rowconfigure(1, weight=0)
         page.grid_rowconfigure(2, weight=1)
         self.settings_tabs = ctk.CTkSegmentedButton(
-            page, values=["Microphone", "Voice", "Wake word & AI", "Hologram", "App"], height=34,
+            page, values=["Microphone", "Voice", "Wake word & AI", "Hologram", "Subtitles", "App"], height=34,
             font=ctk.CTkFont(FONT, 13), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
             unselected_color=PANEL, unselected_hover_color=PANEL_2, fg_color=PANEL,
             command=self._show_settings_tab)
         self.settings_tabs.grid(row=1, column=0, sticky="w", padx=24, pady=(6, 4))
         self.settings_sections = {}
-        for name in ("Microphone", "Voice", "Wake word & AI", "Hologram", "App"):
+        for name in ("Microphone", "Voice", "Wake word & AI", "Hologram", "Subtitles", "App"):
             self.settings_sections[name] = make_scroll_area(page)
         cfg = self.engine.cfg
 
@@ -544,8 +544,11 @@ class MirageApp(ctk.CTk):
         vol.pack(side="left")
         self.vol_value.pack(side="left", padx=(8, 0))
 
-        h = self._row(card, "Speak replies out loud", "Turn off to only see replies in the chat.")
-        self._switch(h, "speak_replies")
+        h = self._row(card, "Speak replies out loud", "Turn off to only see replies as text.")
+        self.speak_switch = self._switch(h, "speak_replies")
+        self.speak_switch.configure(command=lambda: (
+            self.engine.update_config({"speak_replies": bool(self.speak_switch.get())}),
+            self._sync_reply_mode()))
 
         h = self._row(card, "Test")
         ctk.CTkButton(h, text="Play test sentence", fg_color=ACCENT_DARK, hover_color=ACCENT,
@@ -633,6 +636,23 @@ class MirageApp(ctk.CTk):
         ctk.CTkButton(h, text="Show me", width=100, fg_color=ACCENT_DARK, hover_color=ACCENT,
                       command=lambda: self.hologram.preview(4)).pack()
 
+        # --- Subtitles ---
+        body = self.settings_sections["Subtitles"]
+        card = self._card(body, "Subtitles", "Mirage's replies as text under the hologram, "
+                                             "so you can keep it quiet and still see what it says.")
+        h = self._row(card, "Replies", "Pick \"Subtitles only\" to keep Mirage quiet.")
+        modes = {"Voice + subtitles": (True, True), "Subtitles only": (False, True), "Voice only": (True, False)}
+        self.reply_mode = ctk.CTkSegmentedButton(
+            h, values=list(modes), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
+            unselected_color=PANEL_2, command=lambda v: self._set_reply_mode(*modes[v]))
+        self.reply_mode.pack()
+        self._sync_reply_mode()
+        h = self._row(card, "Show what I said too", "Your command appears first, then Mirage's reply.")
+        self._switch(h, "subtitles_show_you")
+        h = self._row(card, "Preview")
+        ctk.CTkButton(h, text="Show me", width=100, fg_color=ACCENT_DARK, hover_color=ACCENT,
+                      command=lambda: self.hologram.preview(4)).pack()
+
         # --- App ---
         body = self.settings_sections["App"]
         card = self._card(body, "App")
@@ -688,6 +708,23 @@ class MirageApp(ctk.CTk):
         self.settings_tabs.set("Microphone")
         self._show_settings_tab("Microphone")
         return page
+
+    def _set_reply_mode(self, speak, subtitles):
+        self.engine.update_config({"speak_replies": speak, "subtitles_enabled": subtitles})
+        if hasattr(self, "speak_switch"):
+            self.speak_switch.select() if speak else self.speak_switch.deselect()
+        self._sync_reply_mode()
+        self.hologram.preview(3)
+
+    def _sync_reply_mode(self):
+        if not hasattr(self, "reply_mode"):
+            return
+        cfg = self.engine.cfg
+        speak, subs = cfg.get("speak_replies", True), cfg.get("subtitles_enabled", True)
+        if not speak and not subs:  # nothing at all would be shown/spoken; treat as subtitles only
+            subs = True
+            self.engine.update_config({"subtitles_enabled": True})
+        self.reply_mode.set("Voice + subtitles" if speak and subs else "Subtitles only" if subs else "Voice only")
 
     def _show_settings_tab(self, name):
         for key, area in self.settings_sections.items():
@@ -1098,8 +1135,11 @@ class MirageApp(ctk.CTk):
                 self.level_bar.set(min(1.0, data * 4))
         elif kind == "heard":
             self.add_message("you", data)
+            if self.engine.cfg.get("subtitles_show_you", False):
+                self.hologram.set_subtitle(data, "you")
         elif kind == "reply":
             self.add_message("mirage", data)
+            self.hologram.set_subtitle(data, "mirage")
         elif kind == "system":
             self.add_message("system", data)
         elif kind == "update_checked":
