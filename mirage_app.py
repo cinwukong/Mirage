@@ -21,6 +21,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 import mirage as M
+import hologram
 
 # --------------------------------------------------------------------------- #
 # Look & feel
@@ -190,6 +191,7 @@ class MirageApp(ctk.CTk):
         }
         self.show_page("home")
 
+        self.hologram = hologram.Hologram(self, lambda: self.engine.cfg)
         self._start_tray()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(50, self._poll_events)
@@ -430,13 +432,13 @@ class MirageApp(ctk.CTk):
         page.grid_rowconfigure(1, weight=0)
         page.grid_rowconfigure(2, weight=1)
         self.settings_tabs = ctk.CTkSegmentedButton(
-            page, values=["Microphone", "Voice", "Wake word & AI", "App"], height=34,
+            page, values=["Microphone", "Voice", "Wake word & AI", "Hologram", "App"], height=34,
             font=ctk.CTkFont(FONT, 13), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
             unselected_color=PANEL, unselected_hover_color=PANEL_2, fg_color=PANEL,
             command=self._show_settings_tab)
         self.settings_tabs.grid(row=1, column=0, sticky="w", padx=24, pady=(6, 4))
         self.settings_sections = {}
-        for name in ("Microphone", "Voice", "Wake word & AI", "App"):
+        for name in ("Microphone", "Voice", "Wake word & AI", "Hologram", "App"):
             self.settings_sections[name] = make_scroll_area(page)
         cfg = self.engine.cfg
 
@@ -571,6 +573,34 @@ class MirageApp(ctk.CTk):
         self.ai_status = ctk.CTkLabel(h, text="", font=ctk.CTkFont(FONT, 13))
         self.ai_status.pack()
         self._update_ai_status()
+
+        # --- Hologram ---
+        body = self.settings_sections["Hologram"]
+        card = self._card(body, "Hologram", "A see-through orb that pops up in a corner of your screen "
+                                            "while Mirage listens, thinks and speaks.")
+        h = self._row(card, "Show hologram", "Pops up when you say \"mirage\" and fades away after.")
+        self._switch(h, "hologram_enabled")
+        h = self._row(card, "Corner")
+        corners = {"Bottom right": "bottom-right", "Bottom left": "bottom-left",
+                   "Top right": "top-right", "Top left": "top-left"}
+        corner_menu = ctk.CTkOptionMenu(
+            h, width=200, values=list(corners), fg_color=PANEL_2, button_color=BORDER,
+            button_hover_color=ACCENT_DARK,
+            command=lambda v: (self.engine.update_config({"hologram_corner": corners[v]}),
+                               self.hologram.preview()))
+        corner_menu.set(next((k for k, v in corners.items() if v == cfg.get("hologram_corner")), "Bottom right"))
+        corner_menu.pack()
+        h = self._row(card, "Size")
+        sizes = {"Small": "small", "Medium": "medium", "Large": "large"}
+        size_btn = ctk.CTkSegmentedButton(
+            h, values=list(sizes), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
+            unselected_color=PANEL_2,
+            command=lambda v: (self.engine.update_config({"hologram_size": sizes[v]}), self.hologram.preview()))
+        size_btn.set(next((k for k, v in sizes.items() if v == cfg.get("hologram_size")), "Medium"))
+        size_btn.pack()
+        h = self._row(card, "Preview", "Shows the hologram for a few seconds.")
+        ctk.CTkButton(h, text="Show me", width=100, fg_color=ACCENT_DARK, hover_color=ACCENT,
+                      command=lambda: self.hologram.preview(4)).pack()
 
         # --- App ---
         body = self.settings_sections["App"]
@@ -1029,8 +1059,10 @@ class MirageApp(ctk.CTk):
             self.side_status.configure(text=text)
             self.side_dot.delete("all")
             self.side_dot.create_oval(2, 2, 11, 11, fill=color, outline="")
+            self.hologram.set_status(self.status)
         elif kind == "level":
             self.level = data
+            self.hologram.set_level(data)
             if self.current_page == "settings":
                 self.level_bar.set(min(1.0, data * 4))
         elif kind == "heard":

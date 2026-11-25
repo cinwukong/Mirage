@@ -85,6 +85,9 @@ DEFAULT_CONFIG = {
     "speak_replies": True,
     "wake_sound": True,
     "close_to_tray": True,
+    "hologram_enabled": True,
+    "hologram_corner": "bottom-right",   # top-left, top-right, bottom-left, bottom-right
+    "hologram_size": "medium",           # small, medium, large
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
     "update_repo": "",             # "" = use UPDATE_REPO
