@@ -39,7 +39,7 @@ UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
 KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
-                  "memory", "reminders.json", ".webview", "voices", "voice_model"}
+                  "memory", "reminders.json", ".webview", "voices", "voice_model", "voice_cache"}
 
 
 def read_version() -> str:
@@ -754,16 +754,27 @@ class Engine:
                 self.local_voice.load_async(then=self.voice_loaded)
             else:  # give the graphics card's memory back
                 threading.Thread(target=self.local_voice.unload, daemon=True).start()
+        if self.cfg.get("voice_engine") == "mirage" and any(
+                k in changes and changes[k] != old.get(k) for k in ("mirage_voice", "voice_rate", "mirage_voice_quality")):
+            self.warm_voice()
         if "weather_city" in changes:
             self.cfg["weather_location"] = None
         if "github_token" in changes:
             global GITHUB_TOKEN
             GITHUB_TOKEN = (changes["github_token"] or "").strip()
 
+    def warm_voice(self):
+        """Prepare the lines Mirage says most in the current voice, speed and quality."""
+        if self.local_voice.ready():
+            self.local_voice.warm_up(self.voice_local.get_voice(self.cfg.get("mirage_voice")),
+                                     max(0.5, min(2.0, int(self.cfg.get("voice_rate", 185)) / 185)),
+                                     self.cfg.get("mirage_voice_quality", "balanced"))
+
     def voice_loaded(self):
         """Once Mirage's own voice is ready, make sure there's a voice picked to speak with."""
         vl = self.voice_local
         if vl.get_voice(self.cfg.get("mirage_voice")):
+            self.warm_voice()
             return
         voices = vl.list_voices()
         if not voices:  # first time: bring over the voices made in VoiceStudio
@@ -785,7 +796,7 @@ class Engine:
                 log(f"Couldn't make a starting voice: {e}")
                 return
         pick = next((v for v in voices if v.get("vs_id") and v["vs_id"] == self.cfg.get("voicestudio_voice")), voices[0])
-        self.update_config({"mirage_voice": pick["id"]})
+        self.update_config({"mirage_voice": pick["id"]})  # also prepares its common lines
         self.emit("mirage_voice")
 
     @property

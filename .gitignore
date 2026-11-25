@@ -12,3 +12,4 @@ reminders.json
 .webview/
 voices/
 voice_model/
+voice_cache/

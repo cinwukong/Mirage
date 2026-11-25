@@ -35,6 +35,13 @@ if sys.platform.startswith("win") and os.environ.get("LOCALAPPDATA"):
 else:
     MODEL_DIR = OLD_MODEL_DIR
 DONE = ".mirage-complete"
+# Lines Mirage says often are saved as audio here, so they play instantly instead of being made again
+CACHE_DIR = MODEL_DIR.parent / "voice_cache" if MODEL_DIR != OLD_MODEL_DIR else BASE_DIR / "voice_cache"
+CACHE_MAX_CHARS = 80      # only short lines ("Mirage online.", "Yes?", "Done."); long answers rarely repeat
+CACHE_MAX_FILES = 500     # per voice; the least recently used go first
+COMMON_LINES = ["Mirage online.", "Yes?", "Done.", "Playing.", "Paused.", "Got it. I'll remember that.",
+                "Hello. This is how I sound.", "It's already playing.", "It's already paused.",
+                "Here I am.", "How long should the timer be?", "Something went wrong."]
 MODEL_BYTES = 3.27e9
 OMNIVOICE_VERSION = "0.2.1"
 SAMPLE_RATE = 24000
@@ -562,6 +569,7 @@ def delete_voice(vid):
     v = get_voice(vid)
     if not v:
         return False
+    shutil.rmtree(CACHE_DIR / vid, ignore_errors=True)
     for ext in (".json", ".wav", ".pt"):
         try:
             (VOICES_DIR / f"{vid}{ext}").unlink()
@@ -869,6 +877,78 @@ class LocalVoice:
                 audio = self.model.generate(**kw)[0]
             return np.asarray(audio, dtype=np.float32).reshape(-1), int(self.model.sampling_rate)
 
+    # ---- saved lines ----
+    @staticmethod
+    def _cache_file(voice, speed, quality, text):
+        """Where a line's audio is saved. Changing the voice's recording, speed or quality makes a new one."""
+        import hashlib
+        vid = (voice or {}).get("id") or "_default"
+        stamp = ""
+        if voice and voice.get("audio") and (VOICES_DIR / voice["audio"]).exists():
+            stamp = str(int((VOICES_DIR / voice["audio"]).stat().st_mtime))
+        else:
+            stamp = f"{clean_instruct((voice or {}).get('instruct'))}|{(voice or {}).get('seed')}"
+        key = f"{round(speed, 2)}|{quality}|{stamp}|{text.strip().lower()}"
+        return CACHE_DIR / vid / (hashlib.sha1(key.encode("utf-8")).hexdigest()[:20] + ".wav")
+
+    def _cache_get(self, voice, speed, quality, text):
+        f = self._cache_file(voice, speed, quality, text)
+        if not f.exists():
+            return None
+        try:
+            import soundfile as sf
+            audio, sr = sf.read(str(f), dtype="float32")
+            os.utime(f)  # recently used
+            return audio, sr
+        except Exception:
+            return None
+
+    def _cache_put(self, voice, speed, quality, text, audio, sr):
+        try:
+            f = self._cache_file(voice, speed, quality, text)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            write_wav(f, audio, sr)
+            files = sorted(f.parent.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+            for old in files[:max(0, len(files) - CACHE_MAX_FILES)]:
+                old.unlink()
+        except Exception as e:
+            self.log(f"Couldn't save a voice line: {e}")
+
+    def line(self, text, voice=None, speed=1.0, quality="balanced"):
+        """Audio for one piece of text: from memory, from the saved lines, or newly made (and saved if short)."""
+        key = ((voice or {}).get("id"), round(speed, 2), quality, text)
+        got = self._cache.get(key)
+        short = len(text) <= CACHE_MAX_CHARS
+        if got is None and short:
+            got = self._cache_get(voice, speed, quality, text)
+        if got is None:
+            got = self.synthesize(text, voice, speed, quality)
+            if short:
+                self._cache_put(voice, speed, quality, text, *got)
+        if short:
+            if len(self._cache) > 80:
+                self._cache.clear()
+            self._cache[key] = got
+        return got
+
+    def warm_up(self, voice=None, speed=1.0, quality="balanced"):
+        """Make and save the lines Mirage says most, in the background, so they're instant later."""
+        self._warm_run = getattr(self, "_warm_run", 0) + 1
+        run = self._warm_run
+
+        def work():
+            time.sleep(3)  # let a dragged slider settle; only the newest settings get prepared
+            for t in COMMON_LINES:
+                if self.model is None or run != self._warm_run:
+                    return
+                try:
+                    if self._cache_get(voice, speed, quality, t) is None:
+                        self.line(t, voice, speed, quality)
+                except Exception as e:
+                    self.log(f"Couldn't prepare the line {t!r}: {e}")
+                    return
+        threading.Thread(target=work, daemon=True, name="voice-warmup").start()
+
     def speak(self, text, voice=None, speed=1.0, quality="balanced", volume=1.0):
         """Say text out loud. The next sentence is made while the current one plays."""
         import numpy as np
@@ -878,15 +958,7 @@ class LocalVoice:
             sd = None
         playing = False
         for chunk in split_sentences(text):
-            key = ((voice or {}).get("id"), round(speed, 2), quality, chunk)
-            got = self._cache.get(key)
-            if got is None:
-                got = self.synthesize(chunk, voice, speed, quality)
-                if len(chunk) <= 40:  # remember short, repeated lines like "Yes?"
-                    if len(self._cache) > 80:
-                        self._cache.clear()
-                    self._cache[key] = got
-            audio, sr = got
+            audio, sr = self.line(chunk, voice, speed, quality)
             audio = np.clip(audio * max(0.0, min(1.0, volume)), -1, 1)
             if sd is not None:
                 if playing:
@@ -942,6 +1014,7 @@ class LocalVoice:
             self._prompts.pop(vid, None)
             for k in [k for k in self._cache if k[0] == vid]:
                 self._cache.pop(k, None)
+        shutil.rmtree(CACHE_DIR / vid, ignore_errors=True)
 
 
 def _play_blocking(audio, sr):
