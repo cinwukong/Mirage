@@ -599,10 +599,18 @@ class MirageApp(ctk.CTk):
 
         # --- Hologram ---
         body = self.settings_sections["Hologram"]
-        card = self._card(body, "Hologram", "A see-through orb that pops up in a corner of your screen "
+        card = self._card(body, "Hologram", "A see-through hologram that pops up in a corner of your screen "
                                             "while Mirage listens, thinks and speaks.")
         h = self._row(card, "Show hologram", "Pops up when you say \"mirage\" and fades away after.")
         self._switch(h, "hologram_enabled")
+        h = self._row(card, "Look")
+        styles = {"Headband logo": "logo", "Orb": "orb"}
+        style_btn = ctk.CTkSegmentedButton(
+            h, values=list(styles), selected_color=ACCENT_DARK, selected_hover_color=ACCENT,
+            unselected_color=PANEL_2,
+            command=lambda v: (self.engine.update_config({"hologram_style": styles[v]}), self.hologram.preview()))
+        style_btn.set(next((k for k, v in styles.items() if v == cfg.get("hologram_style", "logo")), "Headband logo"))
+        style_btn.pack()
         h = self._row(card, "Corner")
         corners = {"Bottom right": "bottom-right", "Bottom left": "bottom-left",
                    "Top right": "top-right", "Top left": "top-left"}

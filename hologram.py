@@ -8,6 +8,9 @@ import math
 import sys
 import time
 import tkinter as tk
+from pathlib import Path
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
 
 KEY = "#010203"  # this exact colour becomes fully transparent on Windows
 
@@ -22,6 +25,7 @@ COLORS = {
 }
 ACTIVE = ("awaiting", "thinking", "speaking")
 SIZES = {"small": 150, "medium": 210, "large": 290}
+LOGO_STEPS = 9  # pre-rendered logo sizes used for the "pulse" (resizing every frame is too slow)
 
 
 def _mix(c1, c2, f):
@@ -47,6 +51,17 @@ class Hologram:
         self.hide_at = None
         self.scale = 1.0
         self.win = None
+        self._logo_src = None
+        self._logo_frames = {}   # (size, step) -> PhotoImage
+        try:
+            from PIL import Image
+            self._logo_src = Image.open(LOGO_PATH).convert("RGBA")
+            # Hard edges: half-transparent edge pixels would show as a dark fringe on the
+            # see-through background, so make every pixel either fully solid or fully clear.
+            a = self._logo_src.getchannel("A").point(lambda v: 255 if v >= 110 else 0)
+            self._logo_src.putalpha(a)
+        except Exception:
+            self._logo_src = None
         self._build()
         self._tick()
 
@@ -97,14 +112,35 @@ class Hologram:
             scaling = 1.0
         scaling = max(1.0, scaling)
         size = int(SIZES.get(cfg.get("hologram_size", "medium"), 210) * scaling)
+        if self._use_logo():
+            w, h = int(size * 1.55), int(size * 0.95)
+        else:
+            w = h = size
         margin = int(24 * scaling)
         taskbar = int(56 * scaling)
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
         corner = cfg.get("hologram_corner", "bottom-right")
-        x = margin if "left" in corner else sw - size - margin
-        y = margin if "top" in corner else sh - size - margin - taskbar
-        self.win.geometry(f"{size}x{size}+{x}+{y}")
-        self.size = size
+        x = margin if "left" in corner else sw - w - margin
+        y = margin if "top" in corner else sh - h - margin - taskbar
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+        self.size, self.w, self.h = size, w, h
+
+    def _use_logo(self):
+        return self._logo_src is not None and self.get_cfg().get("hologram_style", "logo") == "logo"
+
+    def _logo_frame(self, width, step):
+        key = (width, step)
+        img = self._logo_frames.get(key)
+        if img is None:
+            from PIL import Image, ImageTk
+            f = 0.92 + 0.16 * step / (LOGO_STEPS - 1)
+            w = max(8, int(width * f))
+            h = max(4, int(w * self._logo_src.height / self._logo_src.width))
+            img = ImageTk.PhotoImage(self._logo_src.resize((w, h), Image.LANCZOS), master=self.root)
+            if len(self._logo_frames) > 40:
+                self._logo_frames.clear()
+            self._logo_frames[key] = img
+        return img
 
     # ---------------------------------------------------------------- state
     def set_status(self, status):
@@ -162,10 +198,69 @@ class Hologram:
                             self.win.attributes("-alpha", 0.93 * fade)
                         except tk.TclError:
                             pass
-                    self._draw(now, (0.55 + 0.45 * pop) * (0.85 + 0.15 * fade))
+                    k = (0.55 + 0.45 * pop) * (0.85 + 0.15 * fade)
+                    if self._use_logo():
+                        self._draw_logo(now, k)
+                    else:
+                        self._draw(now, k)
         except tk.TclError:
             return
         self.root.after(33, self._tick)
+
+    def _level(self, t):
+        target = 0.0
+        if self.status == "awaiting":
+            target = min(1.0, self.level * 5)
+        elif self.status == "speaking":
+            target = 0.45 + 0.35 * abs(math.sin(t * 9)) * abs(math.sin(t * 3.7))
+        elif self.status == "thinking":
+            target = 0.15
+        self.smooth = self.smooth * 0.7 + target * 0.3
+        return self.smooth
+
+    def _draw_logo(self, t, scale):
+        """The purple headband in the middle, elliptical rings around it, a voice wave under it."""
+        c = self.canvas
+        c.delete("all")
+        W, H = self.w, self.h
+        cx, cy = W / 2, H * 0.43
+        color = COLORS.get(self.status, COLORS["listening"])
+        bright = _mix(color, "#ffffff", 0.45)
+        dim = _dim(color, 0.45)
+        lv = self._level(t)
+        speed = 3.0 if self.status == "thinking" else 1.0
+
+        # elliptical rings of rotating arc segments, wider than the headband
+        for k, n, ext, direction, col, width in ((1.00, 3, 55, 1, color, 2), (0.90, 4, 30, -1, bright, 1)):
+            rx, ry = W * 0.46 * k * scale, H * 0.36 * k * scale
+            for i in range(n):
+                start = (direction * t * 45 * speed + i * 360 / n) % 360
+                c.create_arc(cx - rx, cy - ry, cx + rx, cy + ry, start=start, extent=ext,
+                             style="arc", outline=col, width=max(width, int(self.size * 0.012 * width)))
+        rx, ry = W * 0.43 * scale, H * 0.33 * scale
+        c.create_oval(cx - rx, cy - ry, cx + rx, cy + ry, outline=dim, width=1)
+        if self.status == "thinking":
+            rx, ry = W * 0.39 * scale, H * 0.30 * scale
+            c.create_arc(cx - rx, cy - ry, cx + rx, cy + ry, start=(t * 380) % 360, extent=45,
+                         style="arc", outline=bright, width=max(2, int(self.size * 0.018)))
+
+        # the logo, pulsing with the voice
+        step = max(0, min(LOGO_STEPS - 1, int(round(lv * (LOGO_STEPS - 1)))))
+        breathe = 1 + 0.02 * math.sin(t * 2.4)
+        img = self._logo_frame(int(W * 0.66 * scale * breathe), step)
+        c.create_image(cx, cy, image=img)
+
+        # voice wave under the logo
+        bars = 25
+        base_y = H * 0.90
+        span = W * 0.56 * scale
+        bw = max(2, int(span / bars * 0.45))
+        for i in range(bars):
+            x = cx - span / 2 + span * i / (bars - 1)
+            edge = 1 - abs(i - (bars - 1) / 2) / ((bars - 1) / 2)  # taller in the middle
+            wob = 0.5 + 0.5 * math.sin(t * 8 + i * 0.9)
+            h = H * (0.015 + 0.11 * lv * wob * (0.35 + 0.65 * edge))
+            c.create_line(x, base_y - h, x, base_y + h, fill=color, width=bw, capstyle="round")
 
     def _draw(self, t, scale):
         c = self.canvas
