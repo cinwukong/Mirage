@@ -974,6 +974,8 @@ class Engine:
             known = [f"[{f['topic'] or 'Me'}] {f['text']}" for f in self.memory.facts()]
             facts = self.recall.ask_for_facts(self.brains["local"].llm, convo, known)
             saved = self.recall.save_facts(self.memory, facts, log, self.skills.SENSITIVE_FACT)
+            log(f"Learning: read {len(talk)} exchange{'s' if len(talk) != 1 else ''}; the brain suggested "
+                f"{len(facts)} fact{'s' if len(facts) != 1 else ''}, {len(saved)} new.")
             if saved:
                 self.emit("memory_changed")
         self.chats.mark_learned([r["id"] for r in rows])

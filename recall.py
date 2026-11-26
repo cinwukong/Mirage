@@ -189,7 +189,13 @@ Rules:
   murder-mystery game the user is making".
 - topic: "Me" for facts about the user themselves, otherwise the person, pet, game or project the fact is
   about, in a few words.
-- Most conversations have nothing worth keeping. Then return an empty list."""
+- If there's nothing new about the user, return an empty list.
+
+Example. Conversation:
+User: my dog bruno hates thunder, he hid under my bed all night
+User: open youtube
+Answer: {"facts": [{"topic": "Bruno", "fact": "Bruno is the user's dog", "replaces": ""},
+                   {"topic": "Bruno", "fact": "Bruno is scared of thunder", "replaces": ""}]}"""
 
 LEARN_SCHEMA = {
     "type": "object",
@@ -213,7 +219,7 @@ def ask_for_facts(llm, conversation: str, known: list) -> list:
     try:
         facts = json.loads(raw).get("facts") or []
     except Exception:
-        return []
+        raise RuntimeError(f"the brain's answer wasn't JSON: {raw[:200]!r}")
     out = []
     for f in facts:
         if isinstance(f, dict) and str(f.get("fact") or "").strip():

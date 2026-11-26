@@ -681,6 +681,8 @@ def parse_fact(line: str) -> dict:
     t = re.search(r"·\s*\[\[([^\]|]+)", body) or re.search(r"\[\[([^\]|]+)", body)
     if t:
         topic = t.group(1).strip()
+    elif re.match(r"(?:my|i|i'm|im|i've|i'd|me|mine)\b", clean_md(line).lower()):
+        topic = "Me"  # saved before Mirage linked facts to topics
     return {"line": line.strip(), "when": when, "text": clean_md(line), "topic": topic, "noticed": "#noticed" in body}
 
 
