@@ -416,6 +416,13 @@ const SECTIONS = [
            C().wake_words.join(", "), v => setCfg({ wake_words: v.split(",").map(s => s.trim().toLowerCase()).filter(Boolean) })),
       toggle("wake_sound", "Beep when I say “mirage”"),
       range("command_timeout_seconds", "Time to give a command", "After saying just “mirage”.", 3, 15, 1, v => v + " s"),
+      row("Keep listening after replies", "Carry on talking without saying “mirage” again. Say “that's all” or “thanks” when you're done.",
+          toggleEl(C().follow_up !== false, v => setCfg({ follow_up: v }, true))),
+      C().follow_up !== false && range("follow_up_seconds", "Keep listening for", "How long Mirage waits for you after it replies.", 4, 20, 1, v => v + " s"),
+      row("Interrupt by talking", C().voice_engine === "mirage"
+            ? "Talk over Mirage to cut it off. On speakers, where it can hear itself, start with “mirage” instead."
+            : "Talk over Mirage to cut it off. Needs Mirage's own voice (Voice page).",
+          toggleEl(C().barge_in !== false, v => setCfg({ barge_in: v }))),
       custom("Hearing", spInstalled() ? "Mirage writes down what you say with NVIDIA Parakeet, on this PC."
                                       : "Install Mirage's own ears for much better hearing. They come with its voice.", () => speechCtl("ears")),
     ] },

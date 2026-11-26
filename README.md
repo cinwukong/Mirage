@@ -53,6 +53,15 @@ with no other apps:
 - Both run with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0). Models are stored in
   `%LOCALAPPDATA%\Mirage\speech`.
 
+## Conversations
+- **Keep listening after replies** (Settings → Listening): after Mirage answers something you said, it listens for
+  about 8 seconds (the hologram turns gold), so you can carry on without saying "mirage" again. Say "that's all",
+  "never mind", "okay" or "thanks" to end it.
+- **Interrupt by talking:** talk over Mirage and it stops, then treats what you're saying as the next command.
+  "Stop" or "shut up" just stop it; "hold on" stops it and keeps listening.
+- Mirage notices when it can hear its own voice (speakers instead of a headset). Then only "Mirage, …" cuts it off,
+  so it doesn't interrupt itself. It switches back when you put the headset on.
+
 ## Files
 - `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
 - `ui_web.py` + `web/`: the window and interface

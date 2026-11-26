@@ -7,6 +7,7 @@ all running on this PC through sherpa-onnx. Installed once from Settings (about 
   which is far more reliable than a separate wake word detector (tested: it tells "mirage" from "my rage").
 """
 
+import collections
 import hashlib
 import json
 import math
@@ -501,6 +502,7 @@ class Speech:
         self._loader = None
         self._cache = {}
         self._warm_run = 0
+        self.played = collections.deque(maxlen=6)  # what the voice played lately, for EchoMeter
 
     def ready(self):
         return self.tts is not None and self.asr is not None
@@ -693,11 +695,27 @@ class Speech:
                 sd.wait()
             if stop and stop():
                 break
+            self._played(x, sr)
             sd.play(x, sr)
             playing = True
+            if stop and stop():  # cut off while this was starting
+                sd.stop()
+                break
         if playing:
             sd.wait()
+        if self.played and self.played[-1][2] > time.time():
+            self.played[-1][2] = time.time()  # cut short
         self.last_error = ""
+
+    def _played(self, x, sr):
+        """Remember what this sentence sounds like and when it played, for EchoMeter."""
+        import numpy as np
+        if self.played and self.played[-1][2] > time.time():
+            self.played[-1][2] = time.time()
+        n = int(len(x) * 16000 / sr)
+        x16 = np.interp(np.arange(n) * (sr / 16000), np.arange(len(x)), x).astype(np.float32)
+        t = time.time()
+        self.played.append([t, x16, t + len(x) / sr])
 
     def warm_up(self, voice, speed, pitch, robot, lines):
         """Prepare the lines Mirage says most for the current voice settings, in the background."""
@@ -758,6 +776,71 @@ class Listener:
 
     def speaking(self):
         return self.vad.is_speech_detected()
+
+    def recent(self, seconds):
+        """The last few seconds of microphone audio."""
+        return self.buf[-int(16000 * seconds):]
+
+
+class EchoMeter:
+    """Tells whether the microphone hears Mirage's own voice, which happens with speakers but not a headset.
+    It lines up the last second of mic audio with what was played just before (GCC-PHAT cross-correlation):
+    Mirage's voice coming back through the room shows up as one sharp peak; your own voice doesn't."""
+
+    WINDOW, MAX_LAG = 1.0, 0.8   # seconds of mic audio compared; how late the echo may arrive
+    EARLY = 0.15                 # the mic's clock can run a little behind the speaker's
+
+    def __init__(self, speech):
+        import numpy as np
+        self.np = np
+        self.speech = speech
+        self.mic = np.zeros(0, dtype=np.float32)
+        self.mic_end = 0.0
+        self.next = 0.0
+        self.streak, self.score = 0, 0.0
+        self.clear = 0  # checks in a row where the voice played and the mic didn't carry it (a headset)
+
+    def _reference(self, start, n):
+        """What the voice played from time start, n samples at 16 kHz (silence where nothing played)."""
+        np = self.np
+        ref = np.zeros(n, dtype=np.float32)
+        for t0, x, end in list(self.speech.played):
+            a = int(round((t0 - start) * 16000))
+            stop = min(len(x), int(round((end - t0) * 16000)))
+            lo, hi = max(0, a), min(n, a + stop)
+            if lo < hi:
+                ref[lo:hi] = x[lo - a:hi - a]
+        return ref
+
+    def feed(self, x, t_end):
+        """A block of 16 kHz mic audio that ended at t_end. Returns how clearly the mic carries Mirage's voice
+        (a peak-to-noise ratio: about 4 for nothing, well over 10 for speakers), or None when it can't tell."""
+        np = self.np
+        w = int(16000 * self.WINDOW)
+        self.mic = np.concatenate([self.mic, x])[-w:]
+        self.mic_end = t_end
+        if t_end < self.next or len(self.mic) < w:
+            return None
+        self.next = t_end + 0.5
+        lag, early = int(16000 * self.MAX_LAG), int(16000 * self.EARLY)
+        ref = self._reference(t_end - self.WINDOW - self.MAX_LAG, w + lag + early)
+        if np.mean(np.abs(ref[lag:lag + w]) > 0.01) < 0.5:  # the voice wasn't playing most of that time
+            return None
+        n = 1 << int(np.ceil(np.log2(len(ref) + w)))
+        cross = np.conj(np.fft.rfft(self.mic, n)) * np.fft.rfft(ref, n)
+        c = np.fft.irfft(cross / (np.abs(cross) + 1e-12), n)[:lag + early + 1]  # c[k]: mic lines up with ref[k:]
+        spread = float(np.std(c))
+        return float(np.max(c)) / spread if spread > 0 else None
+
+    def hears_voice(self, x, t_end) -> bool:
+        """True once the mic clearly carries the voice: one strong match, or two good ones in a row."""
+        r = self.feed(x, t_end)
+        if r is None:
+            return False
+        self.streak = self.streak + 1 if r >= 8 else 0
+        self.clear = self.clear + 1 if r < 6 else 0
+        self.score = r
+        return r >= 12 or self.streak >= 2
 
 
 def strip_wake(text: str, extra_words=()):

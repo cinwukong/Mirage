@@ -8,10 +8,12 @@ Say "mirage" followed by a command, e.g. "mirage open youtube", or just
 "mirage", wait for "Yes?", then say the command.
 """
 
+import collections
 import json
 import os
 import platform
 import queue
+import random
 import re
 import socket
 import subprocess
@@ -76,6 +78,9 @@ def log(msg: str) -> None:
 DEFAULT_CONFIG = {
     "wake_words": ["mirage", "mirages", "my rage", "mirror"],
     "command_timeout_seconds": 6,
+    "follow_up": True,             # keep listening after a reply, so you can carry on without the wake word
+    "follow_up_seconds": 8,
+    "barge_in": True,              # talk over Mirage to cut it off (works best with a headset)
     "input_device": None,          # None = system default microphone
     "voice_engine": "windows",     # "windows", "mirage" (Mirage's own AI voice) or "voicestudio"
     "kokoro_voice": "af_bella",    # Mirage's own voice (Kokoro), see speech.VOICES
@@ -333,6 +338,69 @@ def wav_with_volume(wav: bytes, volume: float) -> bytes:
 # --------------------------------------------------------------------------- #
 # Speech output
 # --------------------------------------------------------------------------- #
+class Heard(str):
+    """A command you said out loud (typed ones are plain strings): after the reply, Mirage keeps listening."""
+
+
+# Said while Mirage is waiting for you to carry on: these end the conversation instead of being commands.
+FOLLOW_UP_END = re.compile(r"(?:no|nope|nah|nothing|no thanks?|no thank you|never ?mind|that'?s (?:all|it|everything)|"
+                           r"i'?m (?:good|done|fine)|all good|stop(?: it| talking| that)?|cancel|shut up|be quiet|quiet|enough|okay stop|"
+                           r"(?:good ?)?bye(?: bye)?|see you|later|that'?ll be all)(?: (?:thanks|thank you|mirage))*")
+FOLLOW_UP_THANKS = re.compile(r"(?:(?:okay|ok|great|cool|perfect|nice|awesome) )?(?:thanks|thank you|cheers)(?: (?:so much|a lot|mirage))*")
+FOLLOW_UP_OK = re.compile(r"(?:okay|ok|alright|all right|cool|great|perfect|nice|awesome|got it|good|sure|right)(?: (?:then|thanks|mirage))*")
+FOLLOW_UP_WAIT = re.compile(r"(?:wait|hold on|hang on|one (?:sec|second)|just a (?:sec|second))(?: a (?:sec|second))?")
+FILLERS = {"uh", "um", "umm", "uhh", "hmm", "hm", "mm", "mhm", "ah", "oh", "huh", "er", "erm"}
+
+
+def _letters(t: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", t.lower())
+
+
+def _echo_letters(heard: str, said: str) -> int:
+    """How many letters of what was heard are runs of what Mirage was saying."""
+    from difflib import SequenceMatcher
+    h, s = _letters(heard), _letters(said)
+    if not h or not s:
+        return 0
+    run = min(3, len(h)) if len(h) <= 5 else 4  # shorter matches are just chance
+    return sum(b.size for b in SequenceMatcher(None, h, s, autojunk=False).get_matching_blocks() if b.size >= run)
+
+
+def echo_score(heard: str, said: str) -> float:
+    """How much of what was heard is Mirage's own voice (1.0: all of it). Works on letters, so
+    "the six eared macro" still matches "the Six-eared Macaque", and "1754" matches "17:54"."""
+    n = len(_letters(heard))
+    return _echo_letters(heard, said) / n if n else 0.0
+
+
+def strip_echo(heard: str, said: str) -> str:
+    """Take Mirage's own voice off the start and end of what was heard (through speakers you get both at once)."""
+    words, least = heard.split(), min(6, len(_letters(said)))
+
+    def gain(part):  # letters that are Mirage's, minus a penalty for letters that aren't
+        got = _echo_letters(part, said)
+        return got - 2 * (len(_letters(part)) - got)
+
+    best, cut = 0, 0
+    for k in range(1, len(words)):  # the start that's Mirage talking
+        start = " ".join(words[:k])
+        g = gain(start)
+        if g > best and len(_letters(start)) >= least and echo_score(start, said) >= 0.75:
+            best, cut = g, k
+    words = words[cut:]
+    best, cut = 0, len(words)
+    for k in range(1, len(words) - 2):  # the end (3 words or more, so your own words survive)
+        end = " ".join(words[k:])
+        g = gain(end)
+        if g > best and echo_score(end, said) >= 0.75:
+            best, cut = g, k
+    return " ".join(words[:cut])
+
+
+def word_list(text: str) -> list:
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", (text or "").lower().replace("’", "'"))
+
+
 class Voice:
     """Text-to-speech on its own thread so listening never blocks."""
 
@@ -345,7 +413,37 @@ class Voice:
         self._vs_cache: dict = {}
         self._vs_warned = False
         self._lv_warned = False
+        self.interrupt = threading.Event()   # set when you talk over Mirage
+        self.current = ""                    # what's being said right now
+        self.said: "collections.deque" = collections.deque(maxlen=8)  # (text, when it finished)
+        self._hushed = -1                    # the command whose reply was cut off
         threading.Thread(target=self._run, daemon=True, name="mirage-tts").start()
+
+    def cut(self):
+        """Stop talking right away, and drop anything still waiting to be said."""
+        self.interrupt.set()
+        self._hushed = self.engine._cmd_n
+        try:
+            while True:
+                if self.q.get_nowait() is None:
+                    self.q.put(None)
+                    break
+        except queue.Empty:
+            pass
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
+    @property
+    def last_end(self) -> float:
+        return self.said[-1][1] if self.said else 0.0
+
+    def recent_text(self, seconds=4.0) -> str:
+        """What Mirage is saying or said in the last few seconds (to tell its own echo from you)."""
+        now = time.time()
+        return " ".join(text for text, t in list(self.said) + [(self.current, now)] if text and now - t <= seconds)
 
     def _run(self):
         tts, default_voice, current = None, None, None
@@ -363,6 +461,10 @@ class Voice:
                 break
             cfg = self.engine.cfg
             self.speaking.set()
+            self.current = text
+            if self.interrupt.is_set():  # cut off: this was left over
+                self._finish(text)
+                continue
             self.engine.set_status("speaking")
             spoken = False
             if cfg.get("voice_engine") == "voicestudio":
@@ -381,10 +483,17 @@ class Voice:
                     tts.runAndWait()
                 except Exception as e:
                     log(f"TTS error: {e}")
-            if self.q.empty():
+            self._finish(text)
+
+    def _finish(self, text):
+        self.said.append((text, time.time()))
+        self.current = ""
+        if self.q.empty():
+            if not self.interrupt.is_set():
                 time.sleep(0.3)  # let the echo die out before listening again
-                self.speaking.clear()
-                self.engine.set_status(self.engine.idle_status())
+            self.interrupt.clear()
+            self.speaking.clear()
+            self.engine.done_speaking()
 
     def _speak_voicestudio(self, text, cfg) -> bool:
         if SYSTEM != "Windows":
@@ -430,7 +539,8 @@ class Voice:
             return False
         try:
             voice, speed, pitch, robot = engine.voice_settings()
-            sp.speak(text, voice, speed, pitch, robot, float(engine.cfg.get("voice_volume", 1.0)))
+            sp.speak(text, voice, speed, pitch, robot, float(engine.cfg.get("voice_volume", 1.0)),
+                     stop=self.interrupt.is_set)
             self._lv_warned = False
             return True
         except Exception as e:
@@ -449,6 +559,8 @@ class Voice:
         if show:
             self.engine._last_reply = text
             self.engine.emit("reply", text)
+        if threading.current_thread().name == "mirage-worker" and self._hushed == self.engine._cmd_n:
+            return  # you cut this reply off; don't carry on with the rest of it
         if force or self.engine.cfg.get("speak_replies", True):
             self.speaking.set()
             self.q.put(text)
@@ -648,6 +760,12 @@ class Engine:
         self.mic_error = False
         self.error_detail = ""
         self.awaiting_until = 0.0
+        self._cmd_n = 0                  # counts commands, so a reply you cut off stays quiet
+        self._follow_lock = threading.Lock()
+        self._follow_pending = False     # open the follow-up window once Mirage stops talking
+        self._expect = None              # what Mirage just asked you for ("timer")
+        self._await_cap = 0.0
+        self._echo_at = 0.0              # when Mirage last heard its own voice through speakers
         self.running = True
         self._restart_audio = threading.Event()
         self.cmd_q: "queue.Queue" = queue.Queue()
@@ -702,6 +820,33 @@ class Engine:
         if time.time() < self.awaiting_until:
             return "awaiting"
         return "listening"
+
+    def follow_up_on(self):
+        return bool(self.cfg.get("follow_up", True)) and not self.mic_muted
+
+    def open_follow_up(self, seconds=None):
+        """Listen for the next thing you say, without needing the wake word."""
+        secs = float(seconds or self.cfg.get("follow_up_seconds", 8) or 8)
+        self.awaiting_until = max(self.awaiting_until, time.time() + secs)
+        self._await_cap = self.awaiting_until + 20  # talking keeps it open, but not forever
+        self.set_status("awaiting")
+
+    def end_follow_up(self):
+        with self._follow_lock:
+            self._follow_pending = False
+            self.awaiting_until = 0
+            self._expect = None
+        if not self.voice.speaking.is_set():
+            self.set_status(self.idle_status())
+
+    def done_speaking(self):
+        """The voice has finished everything it had to say."""
+        with self._follow_lock:
+            if self._follow_pending and self.cmd_q.empty():
+                self._follow_pending = False
+                self.open_follow_up()
+                return
+        self.set_status(self.idle_status())
 
     # ---- control from the app ----
     def start(self):
@@ -796,6 +941,8 @@ class Engine:
             item = self.cmd_q.get()
             if item is None:
                 break
+            self._cmd_n += 1
+            self._follow_pending = False
             self.set_status("thinking")
             text = item
             self._last_reply = None
@@ -805,6 +952,14 @@ class Engine:
             except Exception as e:
                 log(f"Error handling '{text}': {e}")
                 self.voice.say("Something went wrong.")
+            with self._follow_lock:
+                carry_on = isinstance(item, Heard) and self.follow_up_on() and self.running and self.cmd_q.empty()
+                if carry_on and self.voice.speaking.is_set():
+                    self._follow_pending = True  # opens when the reply has been said
+                    continue
+                if carry_on:
+                    self.open_follow_up()
+                    continue
             if not self.voice.speaking.is_set():
                 self.set_status(self.idle_status())
 
@@ -833,7 +988,7 @@ class Engine:
             self._on_vosk = not parakeet
 
             def callback(indata, frames, t, status):
-                audio_q.put(bytes(indata))
+                audio_q.put((time.time(), bytes(indata)))
 
             try:
                 import sounddevice as sd
@@ -861,17 +1016,23 @@ class Engine:
                 self.set_status("error", f"Microphone problem: {e}")
                 self._restart_audio.wait(5)
 
+    def barge_in_on(self):
+        return bool(self.cfg.get("barge_in", True)) and self.cfg.get("voice_engine") == "mirage" and self.speech.ready()
+
     def _listen_parakeet(self, audio_q):
-        """Cut the mic into pieces of speech; a separate thread writes each down and looks for the wake word."""
+        """Cut the mic into pieces of speech; a separate thread writes each down and looks for the wake word.
+        With barge-in on it keeps listening while Mirage talks, so you can talk over it to cut it off."""
         import numpy as np
         listener = self.speech_mod.Listener(self.speech)
+        echo = self.speech_mod.EchoMeter(self.speech)
         pieces: "queue.Queue" = queue.Queue()
         stop = threading.Event()
         threading.Thread(target=self._ears, args=(pieces, stop), daemon=True, name="mirage-ears").start()
+        talk_from, next_check, over = None, 0.0, False
         try:
             while self.running and not self._restart_audio.is_set():
                 try:
-                    data = audio_q.get(timeout=0.5)
+                    got_at, data = audio_q.get(timeout=0.5)
                 except queue.Empty:
                     continue
                 if self.mic_muted:
@@ -880,23 +1041,115 @@ class Engine:
                     continue
                 x = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768
                 self.emit("level", float(np.max(np.abs(x))) if len(x) else 0.0)
-                if self.voice.speaking.is_set():
+                if echo.hears_voice(x, got_at):
+                    self._heard_myself(f"the mic carries my voice, {echo.score:.0f}")
+                elif echo.clear >= 6 and self.speakers():
+                    self._echo_at = 0.0  # 3 s of talking without hearing itself: a headset again
+                    log("Mirage can't hear itself any more (headset?), so talking over it cuts it off again.")
+                talking = self.voice.speaking.is_set()
+                if talking and not self.barge_in_on():
                     listener.reset()  # don't listen to ourselves
+                    talk_from, over = None, False
                     continue
-                if self.status == "awaiting" and time.time() > self.awaiting_until:
+                now = time.time()
+                if not talking and self.status == "awaiting" and now > self.awaiting_until:
                     self.set_status(self.idle_status())
-                for piece in listener.feed(x):
-                    pieces.put(piece)
+                out = listener.feed(x)
+                you = listener.speaking()
+                if you and talking:
+                    over = True
+                    talk_from = talk_from or now
+                    if now - talk_from >= 0.25 and now >= next_check and not self.voice.interrupt.is_set():
+                        next_check = now + 0.7  # check it's you and not Mirage's own voice, then stop talking
+                        clip = listener.recent(min(3.0, now - talk_from + 0.5))
+                        threading.Thread(target=self._check_barge_in, args=(clip,), daemon=True).start()
+                elif not you:
+                    talk_from = None
+                if you and not talking and self.awaiting_until and now < self.awaiting_until + 0.3:
+                    self.awaiting_until = min(max(self.awaiting_until, now + 1.2), self._await_cap)  # still talking
+                for piece in out:  # over: started while Mirage talked; echo: may have Mirage's voice in it
+                    pieces.put((piece, now, over, over or talking or now - self.voice.last_end < 0.8))
+                if out and not you:
+                    over = False
         finally:
             stop.set()
             pieces.put(None)
 
+    def _heard_myself(self, why):
+        """The mic picks up Mirage's voice: you're on speakers (a headset mic doesn't)."""
+        if not self.speakers():
+            log(f"Mirage can hear itself through the speakers ({why}), so only its name cuts it off now.")
+        self._echo_at = time.time()
+
+    def speakers(self) -> bool:
+        """Mirage has heard its own voice lately: you're on speakers, not a headset. Then only its name cuts it off."""
+        return time.time() - self._echo_at < 900
+
+    def _clean(self, heard, over=False) -> str:
+        """What you said to Mirage, or "" for a cough, an "um", or Mirage's own voice coming back through speakers.
+        over: it was heard while Mirage was talking."""
+        said = self.voice.recent_text() if over and heard else ""
+        if said:
+            score = echo_score(heard, said)
+            if score >= 0.75 and len(_letters(heard)) >= 8:
+                self._heard_myself(f"heard my own words: {heard!r}")
+            if score >= 0.75 or self.speakers():
+                heard = strip_echo(heard, said)  # keep what you said in between
+                if echo_score(heard, said) >= 0.75:
+                    return ""
+        words = word_list(heard)
+        if not words or all(w in FILLERS for w in words):
+            return ""
+        return heard
+
+    def _cuts_in(self, heard) -> bool:
+        """Should this (heard while Mirage talks) cut it off? With a headset anything you say does."""
+        return not self.speakers() or self.speech_mod.strip_wake(heard, self.cfg.get("wake_words", []))[0]
+
+    def _check_barge_in(self, clip):
+        if not self.voice.speaking.is_set() or self.voice.interrupt.is_set():
+            return
+        try:
+            heard = self._clean(self.speech.transcribe(clip), over=True)
+        except Exception:
+            return
+        if heard and self._cuts_in(heard):
+            log(f"Talked over by: {heard!r}")
+            self._barge_in()
+
+    def _barge_in(self):
+        """You talked over Mirage: stop talking and treat what you're saying as the next command."""
+        if self.voice.speaking.is_set() and not self.voice.interrupt.is_set():
+            self.voice.cut()
+            self.emit("interrupted")
+        self.open_follow_up(4)
+
+    def _take(self, command, follow):
+        """A command heard from you. follow: said without the wake word, while Mirage was waiting for you."""
+        c = command.lower().strip(" .,!?")
+        if follow:
+            if FOLLOW_UP_WAIT.fullmatch(c):
+                return self.open_follow_up(12)
+            if FOLLOW_UP_THANKS.fullmatch(c):
+                self.end_follow_up()
+                return self.voice.say(random.choice(["Anytime.", "You're welcome.", "Any time."]))
+            asked = (self._last_reply or "").rstrip().endswith("?")
+            if FOLLOW_UP_END.fullmatch(c) or (FOLLOW_UP_OK.fullmatch(c) and not asked):
+                log(f"Conversation ended: {command!r}")
+                return self.end_follow_up()
+        with self._follow_lock:
+            self._follow_pending = False
+            self.awaiting_until = 0
+        ends = FOLLOW_UP_END.fullmatch(c) or FOLLOW_UP_THANKS.fullmatch(c)
+        self.cmd_q.put(command if ends else Heard(command))  # "Mirage, stop" doesn't keep the conversation going
+
     def _ears(self, pieces, stop):
         timeout = lambda: float(self.cfg.get("command_timeout_seconds", 6))
         while not stop.is_set():
-            piece = pieces.get()
-            if piece is None:
+            item = pieces.get()
+            if item is None:
                 break
+            piece, cut_at, over, echo = item
             try:
                 heard = self.speech.transcribe(piece)
             except Exception as e:
@@ -904,30 +1157,38 @@ class Engine:
                 continue
             if not heard:
                 continue
+            raw, heard = heard, self._clean(heard, echo)
+            if not heard:
+                if echo and word_list(raw):
+                    log(f"(that was my own voice: {raw!r})")
+                continue
             found, command = self.speech_mod.strip_wake(heard, self.cfg.get("wake_words", []))
+            if over and not found and self.speakers():
+                log(f"(said over me without my name, on speakers: {heard!r})")
+                continue  # through speakers that's usually a mix of you and me; only "Mirage, …" counts
+            barged = echo and self.barge_in_on() and self._cuts_in(heard)
+            if barged:
+                self._barge_in()
             if found:
                 log(f"Heard: {heard!r}")
                 if command:
-                    self.awaiting_until = 0
-                    self.cmd_q.put(command)
+                    self._take(command, follow=False)
                 else:
                     self.emit("wake")
                     if self.cfg.get("wake_sound", True):
                         beep()
-                    self.awaiting_until = time.time() + timeout() + 2
-                    self.set_status("awaiting")
+                    self.open_follow_up(timeout() + 2)
                     self.voice.say("Yes?", show=False)
-            elif time.time() < self.awaiting_until and command:
+            elif command and (barged or cut_at <= self.awaiting_until + 0.3):
                 log(f"Heard: {heard!r}")
-                self.awaiting_until = 0
-                self.cmd_q.put(command)
+                self._take(command, follow=True)
 
     def _listen(self, rec, audio_q):
         timeout = lambda: float(self.cfg.get("command_timeout_seconds", 6))
         utter = bytearray()
         while self.running and not self._restart_audio.is_set():
             try:
-                data = audio_q.get(timeout=0.5)
+                _, data = audio_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             if self.mic_muted:
@@ -957,18 +1218,15 @@ class Engine:
             if m:
                 command = text[m.end():].strip()
                 if command:
-                    self.awaiting_until = 0
-                    self.cmd_q.put(command)
+                    self._take(command, follow=False)
                 else:
                     self.emit("wake")
                     if self.cfg.get("wake_sound", True):
                         beep()
-                    self.awaiting_until = time.time() + timeout() + 2
-                    self.set_status("awaiting")
+                    self.open_follow_up(timeout() + 2)
                     self.voice.say("Yes?", show=False)
             elif time.time() < self.awaiting_until:
-                self.awaiting_until = 0
-                self.cmd_q.put(text)
+                self._take(text, follow=True)
 
     def saved_playlist(self, name):
         lists = {k.lower(): v for k, v in (self.cfg.get("spotify_playlists") or {}).items()}
@@ -1063,6 +1321,10 @@ class Engine:
         if text in ("never mind", "nevermind", "cancel", "nothing", "stop"):
             return
 
+        expect, self._expect = self._expect, None
+        if expect == "timer" and on("timers") and parse_duration(text) > 0 and len(text.split()) <= 6:
+            return say(a.set_timer(parse_duration(text)))  # the answer to "How long should the timer be?"
+
         # ---- Mirage itself ----
         if on("mirage"):
             if re.fullmatch(r"(shut ?down|exit|quit|go to sleep|goodbye)( yourself| mirage)?|turn (yourself|mirage) off|"
@@ -1131,6 +1393,7 @@ class Engine:
                 and not re.search(r"\bremind me in .+ (to|that|about) ", text):
             secs = parse_duration(text)
             if secs <= 0:
+                self._expect = "timer"
                 return say("How long should the timer be?")
             return say(a.set_timer(secs))
 
