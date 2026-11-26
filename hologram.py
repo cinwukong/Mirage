@@ -19,13 +19,15 @@ KEY = "#010203"  # this exact colour becomes fully transparent on Windows
 COLORS = {
     "awaiting": "#f2d17e",   # gold: listening for your command
     "thinking": "#d9a93f",   # deep gold, spinning faster
+    "acting": "#ff9a76",     # coral: using your mouse and keyboard (Esc stops it)
     "speaking": "#c9b2ff",   # lavender
     "listening": "#b794ff",
     "loading": "#9d8db5",
     "muted": "#6b5a80",
     "error": "#e2574c",
 }
-ACTIVE = ("awaiting", "thinking", "speaking")
+ACTIVE = ("awaiting", "thinking", "speaking", "acting")
+BUSY = ("thinking", "acting")
 SIZES = {"small": 150, "medium": 210, "large": 290}
 LOGO_STEPS = 9  # pre-rendered logo sizes used for the "pulse" (resizing every frame is too slow)
 
@@ -248,7 +250,7 @@ class Hologram:
             target = min(1.0, self.level * 5)
         elif self.status == "speaking":
             target = 0.45 + 0.35 * abs(math.sin(t * 9)) * abs(math.sin(t * 3.7))
-        elif self.status == "thinking":
+        elif self.status in BUSY:
             target = 0.15
         self.smooth = self.smooth * 0.7 + target * 0.3
         return self.smooth
@@ -263,7 +265,7 @@ class Hologram:
         bright = _mix(color, "#ffffff", 0.45)
         dim = _dim(color, 0.45)
         lv = self._level(t)
-        speed = 3.0 if self.status == "thinking" else 1.0
+        speed = 3.0 if self.status in BUSY else 1.0
 
         # elliptical rings of rotating arc segments, wider than the headband
         for k, n, ext, direction, col, width in ((1.00, 3, 55, 1, color, 2), (0.90, 4, 30, -1, bright, 1)):
@@ -274,7 +276,7 @@ class Hologram:
                              style="arc", outline=col, width=max(width, int(self.size * 0.012 * width)))
         rx, ry = W * 0.43 * scale, H * 0.33 * scale
         c.create_oval(cx - rx, cy - ry, cx + rx, cy + ry, outline=dim, width=1)
-        if self.status == "thinking":
+        if self.status in BUSY:
             rx, ry = W * 0.39 * scale, H * 0.30 * scale
             c.create_arc(cx - rx, cy - ry, cx + rx, cy + ry, start=(t * 380) % 360, extent=45,
                          style="arc", outline=bright, width=max(2, int(self.size * 0.018)))
@@ -352,7 +354,7 @@ class Hologram:
             c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=col, width=1)
 
         # rotating arc segments, two rings in opposite directions
-        speed = 3.0 if self.status == "thinking" else 1.0
+        speed = 3.0 if self.status in BUSY else 1.0
         r = R * 0.86
         for i in range(3):
             c.create_arc(cx - r, cy - r, cx + r, cy + r, start=(t * 40 * speed + i * 120) % 360,
@@ -363,7 +365,7 @@ class Hologram:
                          extent=38, style="arc", outline=bright, width=max(1, int(s * 0.010)))
 
         # thinking: fast scanning arc
-        if self.status == "thinking":
+        if self.status in BUSY:
             r = R * 0.66
             c.create_arc(cx - r, cy - r, cx + r, cy + r, start=(t * 420) % 360, extent=50,
                          style="arc", outline=bright, width=max(2, int(s * 0.02)))

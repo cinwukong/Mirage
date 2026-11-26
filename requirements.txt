@@ -6,3 +6,4 @@ anthropic
 pywebview
 pystray
 pillow
+comtypes; sys_platform == "win32"

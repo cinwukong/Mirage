@@ -62,6 +62,18 @@ with no other apps:
 - Mirage notices when it can hear its own voice (speakers instead of a headset). Then only "Mirage, …" cuts it off,
   so it doesn't interrupt itself. It switches back when you put the headset on.
 
+## Windows and using your PC
+- **Window shortcuts** (no brain needed): "switch to Discord", "snap this left", "put Chrome and Discord side by
+  side", "move this to my other screen", "minimize Spotify", "minimize everything", "maximize", "what's open",
+  "close Spotify", "close this tab".
+- **The brain can use your mouse and keyboard** for things like "open Discord and go to my messages": it reads the
+  buttons, links and text boxes of the window you're using (Windows UI Automation, like a screen reader), or looks
+  at a screenshot with those controls numbered, then clicks, types, presses keys and scrolls. The hologram turns
+  coral while it does.
+- **Safety:** press **Esc** or move the mouse to stop it at once (saying "stop" works too). It never types into
+  password boxes, and it asks you before clicking things like Send, Delete or Buy, or pressing Enter in a chat.
+  Turn it off with **Settings → Brain → Let Mirage use my mouse and keyboard**.
+
 ## Files
 - `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
 - `ui_web.py` + `web/`: the window and interface

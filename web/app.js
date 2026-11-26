@@ -24,7 +24,7 @@ let level = 0;
 
 const STATUS_TEXT = {
   loading: "Starting up…", listening: "Listening for “mirage”", awaiting: "I'm listening…",
-  thinking: "Thinking…", speaking: "Speaking…", muted: "Microphone off", error: "Needs attention",
+  thinking: "Thinking…", acting: "Using your PC · Esc stops it", speaking: "Speaking…", muted: "Microphone off", error: "Needs attention",
 };
 
 /* ------------------------------------------------------------------ boot */
@@ -184,11 +184,11 @@ function drawHolo(ts) {
   let target = 0;
   if (s === "awaiting") target = Math.min(1, level * 5);
   else if (s === "speaking") target = .45 + .35 * Math.abs(Math.sin(t * 9) * Math.sin(t * 3.7));
-  else if (s === "thinking") target = .2;
+  else if (s === "thinking" || s === "acting") target = .2;
   smooth += (target - smooth) * .25;
-  const ring = { listening: "#b794ff", awaiting: "#f2d17e", thinking: "#d9a93f", speaking: "#ece3ff",
+  const ring = { listening: "#b794ff", awaiting: "#f2d17e", thinking: "#d9a93f", acting: "#ff9a76", speaking: "#ece3ff",
                  muted: "#6b5a80", error: "#e2574c", loading: "#9d8db5" }[s] || "#b794ff";
-  const speed = s === "thinking" ? 3 : 1;
+  const speed = s === "thinking" || s === "acting" ? 3 : 1;
   hctx.clearRect(0, 0, W, H);
 
   // glow: an ellipse that fades out well inside the canvas, so no box edge shows
@@ -223,7 +223,7 @@ function drawHolo(ts) {
   hctx.beginPath(); hctx.ellipse(cx, cy, W * .38, H * .36, 0, 0, 6.283); hctx.stroke();
   arcs(W * .42, H * .40, 3, .95, 1, ring, 2.5);
   arcs(W * .36, H * .33, 4, .5, -1, "rgba(242,209,126,.75)", 1.5);
-  if (s === "thinking") arcs(W * .31, H * .28, 1, .8, 6, "#f2d17e", 3);
+  if (s === "thinking" || s === "acting") arcs(W * .31, H * .28, 1, .8, 6, s === "acting" ? "#ffc2a8" : "#f2d17e", 3);
 
   // ticks around the outside
   hctx.strokeStyle = "rgba(217,169,63,.35)"; hctx.lineWidth = 1;
@@ -400,10 +400,12 @@ const SECTIONS = [
       C().brain === "local" && localInstalled() && range("brain_idle_minutes", "Free graphics memory after", "When the brain isn't used, it hands graphics memory back for games, and wakes up on the next question.", 1, 30, 1, v => v + " min"),
       C().brain === "local" && toggle("think_hard_claude", "Use Claude for “think hard”", "Start a question with “think hard” for tough ones. With this on and Claude Code set up, Claude answers those; otherwise Mirage's brain takes longer to think it through."),
       C().brain !== "off" && custom("Personality", "How Mirage should come across, in your words. For example: calm and a bit cocky, like the Six-eared Macaque.", () => [areaEl("personality", "Calm, witty, a little playful…")]),
+      C().brain !== "off" && row("Let Mirage use my mouse and keyboard", "So it can do things like “open Discord and go to my messages”. Press Esc or move the mouse to stop it. It never types passwords, and asks before sending, deleting or buying anything.",
+          toggleEl(C().pc_control !== false, v => setCfg({ pc_control: v }))),
       C().brain === "claude_code" && custom("Claude Code", "Uses your Claude account. Install it once, then log in.", claudeCtl),
       C().brain === "claude_code" && seg("claude_model", "Model", "Fast uses the least of your Claude usage and replies quickest.",
         [["haiku", "Fast"], ["sonnet", "Balanced"], ["opus", "Smartest"]]),
-      C().brain === "claude_code" && toggle("claude_power", "Let Claude control my PC", "Allows running commands and creating or editing files. When off, Claude can still search the web, read files, and use Mirage's skills."),
+      C().brain === "claude_code" && toggle("claude_power", "Let Claude run commands and edit files", "Allows running commands and creating or editing files. When off, Claude can still search the web, read files, and use Mirage's skills."),
       C().brain === "api" && text("anthropic_api_key", "Anthropic API key", "Pay-per-use. Get one at console.anthropic.com.", "sk-ant-…", true),
       C().brain !== "off" && custom("Try it", "Sends a short test question.", () => [btn("Test brain", () => api().test_brain()), stateEl("brainTest")]),
     ] },

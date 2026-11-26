@@ -505,6 +505,8 @@ class App:
             return
         if kind == "status":
             self.holo.call("set_status", data[0])
+            if data[0] == "acting" and data[1]:
+                self.holo.call("set_subtitle", data[1], "mirage")  # how to stop it
         elif kind in ("heard", "reply", "system"):
             who = {"heard": "you", "reply": "mirage", "system": "sys"}[kind]
             self.messages.append({"who": who, "text": data, "at": datetime.now().strftime("%H:%M")})

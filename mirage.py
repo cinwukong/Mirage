@@ -81,6 +81,7 @@ DEFAULT_CONFIG = {
     "follow_up": True,             # keep listening after a reply, so you can carry on without the wake word
     "follow_up_seconds": 8,
     "barge_in": True,              # talk over Mirage to cut it off (works best with a headset)
+    "pc_control": True,            # the brain may use the mouse and keyboard (Esc stops it)
     "input_device": None,          # None = system default microphone
     "voice_engine": "windows",     # "windows", "mirage" (Mirage's own AI voice) or "voicestudio"
     "kokoro_voice": "af_bella",    # Mirage's own voice (Kokoro), see speech.VOICES
@@ -645,6 +646,17 @@ class Actions:
         return "" if action in ("volume up", "volume down") else "Done."
 
     def type_text(self, text: str) -> str:
+        pc = self.engine.pc
+        if pc.WINDOWS:
+            try:
+                kind, name, password = pc.focused_info()
+                if password or pc.SECRET.search(name or ""):
+                    return "That's a password box. Type that one yourself."
+                time.sleep(0.3)
+                pc.type_unicode(text)  # any letters (å, ä, ö…), whatever the keyboard layout
+                return ""
+            except Exception as e:
+                log(f"Typing failed, trying the simple way: {e}")
         pg = self._keys()
         if not pg:
             return "I can't type on this computer."
@@ -788,6 +800,10 @@ class Engine:
         self.speech.load_async(then=self.speech_loaded)
         self.voice = Voice(self)
         self.actions = Actions(self)
+        import pc
+        self.pc = pc
+        self._confirming = None          # (event, answer) while Mirage waits for a yes or no
+        self.hands = pc.Hands(log=log, confirm=self.confirm, on_start=self._hands_on, on_end=self._hands_off)
         import brains
         self.brains = {"local": brains.LocalBrain(self), "claude_code": brains.ClaudeCodeBrain(self),
                        "api": brains.ApiBrain(self), "off": brains.OffBrain()}
@@ -865,8 +881,54 @@ class Engine:
 
     def submit_text(self, text: str):
         text = text.strip()
-        if text:
+        if text and not self._answer(text):
             self.cmd_q.put(text)
+
+    # ---- yes or no before something that can't be undone ----
+    YES = re.compile(r"(?:yes|yeah|yep|yup|sure|ok|okay|do it|go ahead|go for it|send it|please do|please|"
+                     r"confirm|correct|affirmative|absolutely|of course|right)\b")
+
+    def confirm(self, question: str, timeout=20.0) -> bool:
+        """Ask out loud and wait for "yes" (said or typed). Anything else, Esc, or silence is a no."""
+        ev, answer = threading.Event(), {}
+        self._confirming = (ev, answer)
+        try:
+            self.voice._hushed = -1  # always ask, even if you cut Mirage off earlier
+            self.voice.say(question)
+            end = time.time() + 12
+            while self.voice.speaking.is_set() and time.time() < end:
+                time.sleep(0.05)
+            self.open_follow_up(timeout)
+            end = time.time() + timeout + 3
+            while not ev.is_set() and time.time() < end and not self.hands.stopped():
+                ev.wait(0.1)
+            yes = bool(answer.get("yes"))
+            log(f"Asked {question!r}: {'yes' if yes else 'no'} ({answer.get('said', 'no answer')!r})")
+            return yes
+        finally:
+            self._confirming = None
+            with self._follow_lock:
+                self.awaiting_until = 0
+            if self.hands.active:
+                self.set_status("acting", "Using your PC. Press Esc to stop.")
+
+    def _answer(self, text) -> bool:
+        """If Mirage is waiting for a yes or no, this is it."""
+        pending = self._confirming
+        if not pending:
+            return False
+        ev, answer = pending
+        c = re.sub(r"^(?:mirage[, ]+)", "", text.lower().strip(" .,!?"))
+        answer.update(yes=bool(self.YES.match(c)) and not re.search(r"\b(?:no|not|don'?t|stop|cancel|wait)\b", c), said=text)
+        ev.set()
+        return True
+
+    def _hands_on(self):
+        self.set_status("acting", "Using your PC. Press Esc to stop.")
+
+    def _hands_off(self):
+        if self.status == "acting":
+            self.set_status("thinking")
 
     def set_muted(self, muted: bool):
         self.mic_muted = bool(muted)
@@ -1126,7 +1188,12 @@ class Engine:
 
     def _take(self, command, follow):
         """A command heard from you. follow: said without the wake word, while Mirage was waiting for you."""
+        if self._answer(command):
+            return
         c = command.lower().strip(" .,!?")
+        if self.hands.active and (FOLLOW_UP_END.fullmatch(c) or FOLLOW_UP_WAIT.fullmatch(c)):
+            self.hands.halt("you said stop")  # it's using the PC: stop that now
+            return self.end_follow_up()
         if follow:
             if FOLLOW_UP_WAIT.fullmatch(c):
                 return self.open_follow_up(12)
@@ -1227,6 +1294,48 @@ class Engine:
                     self.voice.say("Yes?", show=False)
             elif time.time() < self.awaiting_until:
                 self._take(text, follow=True)
+
+    def window_command(self, text: str) -> str:
+        """Switching, snapping, moving, minimising and closing windows. "" when it isn't one (or the window isn't
+        open), so the command carries on to opening things or the brain."""
+        pc = self.pc
+        that = r"(?:it|this|that|this window|that window|the window|this one)"
+        m = re.fullmatch(r"(?:put |place |show )?(?:me )?(.+?) and (.+?) (?:side by side|next to each other)", text)
+        if m:
+            return pc.side_by_side(m.group(1), m.group(2))
+        if re.fullmatch(r"what(?:'s| is| apps are| windows are| programs are) (?:open|running)(?: right now| now)?|"
+                        r"what do i have open|(?:list|show me) (?:my |the |all )?(?:open )?windows", text):
+            return pc.list_text()
+        if re.fullmatch(r"(?:minimi[sz]e|hide) (?:all|everything|all windows|all the windows|all my windows)|"
+                        r"show (?:me )?(?:the |my )?desktop|go to (?:the )?desktop", text):
+            return pc.window_action("desktop")
+        m = re.fullmatch(r"(?:snap|move|put|send|drag|throw) (?:(.+?) )?(?:to |on |over to )?(?:the )?(left|right)"
+                         r"(?: side| half)?(?: of (?:the |my )?screen)?", text)
+        if m:
+            name = "" if (m.group(1) or "") in ("to", "on", "over", "it over") else m.group(1) or ""
+            return pc.window_action(m.group(2), name) if pc.find(name) else ""
+        m = re.fullmatch(r"(?:move|put|send|throw|drag) (.+?) to (?:the |my )?(?:other|second|next|main|left|right|"
+                         r"first|primary)? ?(?:screen|monitor|display)", text)
+        if m and pc.find(m.group(1)):
+            return pc.window_action("other screen", m.group(1))
+        m = re.fullmatch(r"(?:minimi[sz]e|hide) (.+)", text)
+        if m and pc.find(m.group(1)):
+            return pc.window_action("minimize", m.group(1))
+        m = re.fullmatch(r"(?:maximi[sz]e|make (.+?) (?:full ?screen|bigger|big)) ?(.*)", text)
+        if m and pc.find(m.group(1) or m.group(2) or ""):
+            return pc.window_action("maximize", m.group(1) or m.group(2) or "")
+        m = re.fullmatch(rf"(?:switch|swap|change|go back|jump|go|flip) (?:over |back )?to (.+)|(?:bring up|focus|focus on|"
+                         rf"restore|unminimi[sz]e) (.+)", text)
+        if m:
+            name = m.group(1) or m.group(2)
+            if not re.fullmatch(that, name) and pc.find(name):
+                return pc.window_action("switch", name)
+        m = re.fullmatch(r"close (.+)", text)
+        if m and not re.fullmatch(rf"{that}|(?:this |the |that )?(?:app|program|tab)", m.group(1)):
+            w = pc.find(m.group(1))
+            if w and not pc.THIS.match(pc._norm(m.group(1))):
+                return pc.window_action("close", m.group(1))
+        return ""
 
     def saved_playlist(self, name):
         lists = {k.lower(): v for k, v in (self.cfg.get("spotify_playlists") or {}).items()}
@@ -1497,6 +1606,12 @@ class Engine:
             if m:
                 return say(a.google(m.group(1)))
 
+        # ---- windows: switch, snap, minimise, close ----
+        if on("windows") and self.pc.WINDOWS:
+            reply = self.window_command(text)
+            if reply:
+                return say(reply)
+
         # ---- opening apps, websites and games ----
         if on("open"):
             m = re.match(r"^(?:open|launch|start|go to) (.+)$", text)
@@ -1546,8 +1661,12 @@ class Engine:
         if on("pc"):
             if re.search(r"\block (?:the |my )?(?:computer|pc|screen)\b", text):
                 return say(a.lock())
-            if re.fullmatch(r"close (?:this |the )?(?:window|app|program)", text):
-                return say(a.close_window())
+            if re.fullmatch(r"close (?:this |the |that )?(?:window|app|program|tab)?|close it", text):
+                if "tab" in text and self.pc.WINDOWS:
+                    self.pc.focus(self.pc.current()) if self.pc.current() else None
+                    self.pc.keys("ctrl+w")
+                    return say("Done.")
+                return say(self.pc.window_action("close", "") if self.pc.WINDOWS else a.close_window())
 
         if on("greetings") and re.fullmatch(r"(hello|hi|hey)( there)?", text):
             return say("Hello. What can I do for you?")
@@ -1584,7 +1703,9 @@ BUILTIN_GROUPS = [
     ("weather", "Weather", ["what's the weather", "will it rain tomorrow"]),
     ("time", "Time and date", ["what time is it", "what's the date"]),
     ("screenshot", "Screenshots", ["take a screenshot"]),
-    ("pc", "Lock and close", ["lock the computer", "close this window"]),
+    ("windows", "Windows", ["switch to discord", "snap this left", "put chrome and discord side by side",
+                            "move this to my other screen", "minimize everything", "what's open", "close spotify"]),
+    ("pc", "Lock and close", ["lock the computer", "close this window", "close this tab"]),
     ("greetings", "Greetings", ["hello"]),
     ("facts", "Quick facts (when Claude is off)", ["who is Sun Wukong"]),
 ]
