@@ -776,9 +776,12 @@ class Hands:
         self.on_start()
 
     def end(self):
+        """The brain is done. A stop only counts for the task it stopped, so clear it for the next one."""
         if self.active:
             self.active = False
             self.on_end()
+        self._stop.clear()
+        self.stop_reason = ""
 
     def halt(self, reason="you asked me to stop"):
         if self.active:
