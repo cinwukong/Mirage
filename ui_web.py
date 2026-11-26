@@ -99,8 +99,7 @@ class Bridge:
             "messages": list(a.messages),
             "start_page": a.start_page,
             "options": a.options,
-            "whisper": a.whisper_state(),
-            "mv": a.mv_state(),
+            "speech": a.speech_state(),
             "builtins": [[g, n, ex] for g, n, ex in M.BUILTIN_GROUPS],
             "claude": a.claude_state(),
             "startup": get_startup(),
@@ -133,136 +132,45 @@ class Bridge:
     def test_voice(self):
         self._app.engine.voice.say("Hello. This is how I sound.", show=False, force=True)
 
-    # ---- Mirage's own voice ----
-    def install_mirage_voice(self):
+    # ---- Mirage's own voice and ears ----
+    def install_speech(self):
         a = self._app
-        lv = a.engine.local_voice
-        if lv.state == "installing":
+        sp = a.engine.speech
+        if sp.state == "installing":
             return
 
         def work():
-            import voice_local
-            lv._set("installing", "Starting…")
+            sp._set("installing", "Starting…")
             try:
-                ok, msg = voice_local.install(lambda m: (setattr(lv, "detail", m), a.push("progress", ["mvState", m, "wait"])),
-                                              log=M.log)
+                ok, msg = a.engine.speech_mod.install(
+                    lambda m: (setattr(sp, "detail", m), a.push("progress", ["speechState", m, "wait"])), log=M.log)
             except Exception as e:
                 ok, msg = False, f"Install failed: {e}"
-            lv._set("off" if ok else "error", msg)
+            sp._set("off" if ok else "error", msg)
             if ok:
-                if a.engine.cfg.get("voice_engine") != "mirage":
-                    a.engine.update_config({"voice_engine": "mirage"})  # also starts loading it
-                else:
-                    lv.load_async(then=a.engine.voice_loaded)
-                a.push("toast", "Mirage's own voice is installed.")
+                sp.load_async(then=a.engine.speech_loaded)
+                a.push("toast", "Mirage's voice and hearing are installed.")
             else:
-                a.push("toast", "The voice didn't install. The reason is next to the button.")
+                a.push("toast", "That didn't install. The reason is next to the button.")
         threading.Thread(target=work, daemon=True).start()
 
-    def _mv_job(self, label, fn, ok_msg=None):
-        """Run a voice-lab job in the background and show how it went next to its button."""
-        a = self._app
-
-        def work():
-            if not a.engine.local_voice.ready():
-                a.push("progress", [label, "The voice is still loading. Try again in a moment.", "bad"])
-                return
-            a.push("progress", [label, "Working…", "wait"])
-            try:
-                res = fn()
-                a.push("state", {"mv": a.mv_state(), "cfg": a.cfg_view()})
-                a.push("progress", [label, ok_msg(res) if callable(ok_msg) else (ok_msg or "Done"), "ok"])
-            except Exception as e:
-                a.push("progress", [label, str(e), "bad"])
-        threading.Thread(target=work, daemon=True).start()
-
-    def mv_preview(self, instruct):
-        lv = self._app.engine.local_voice
-        self._mv_job("mvDesignState", lambda: lv.design_preview(instruct),
-                     lambda r: "That's the voice. Keep it, or try another take.")
-
-    def mv_save_design(self, name):
+    def speech_reload(self):
         e = self._app.engine
+        e.speech.load_async(then=e.speech_loaded)
 
-        def go():
-            v = e.local_voice.design_save(name)
-            e.update_config({"mirage_voice": v["id"]})
-            return v
-        self._mv_job("mvDesignState", go, lambda v: f"Saved “{v['name']}” and switched to it.")
-
-    def mv_pick_file(self):
-        import webview
-        kind = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or getattr(webview, "OPEN_DIALOG", 10)
-        res = self._app.window.create_file_dialog(kind, file_types=("Recordings (*.wav;*.mp3;*.flac;*.ogg)", "All files (*.*)"))
-        return str(res[0]) if res else None
-
-    def mv_save_clone(self, path, name, transcript):
+    def preview_voice(self, voice):
+        """Say a line in one of the voices without picking it."""
         e = self._app.engine
-
-        def go():
-            if not path or not os.path.isfile(path):
-                raise ValueError("Pick a recording first.")
-            v = e.local_voice.clone_save(path, name, transcript)
-            e.update_config({"mirage_voice": v["id"]})
-            e.voice.say(f"This is {v['name']}.", show=False, force=True)
-            return v
-        self._mv_job("mvCloneState", go, lambda v: f"Saved “{v['name']}” and switched to it.")
-
-    def mv_import(self, vs_id):
-        e = self._app.engine
-        vl = e.voice_local
-
-        def go():
-            v = vl.import_voicestudio(vs_id)
-            e.local_voice.forget(v["id"])
-            e.update_config({"mirage_voice": v["id"]})
-            e.voice.say(f"This is {v['name']}.", show=False, force=True)
-            return v
-        self._mv_job("mvImportState", go, lambda v: f"Brought over “{v['name']}” and switched to it.")
-
-    def mv_delete(self, vid):
-        e = self._app.engine
-        vl = e.voice_local
-        vl.delete_voice(vid)
-        e.local_voice.forget(vid)
-        if e.cfg.get("mirage_voice") == vid:
-            rest = vl.list_voices()
-            e.update_config({"mirage_voice": rest[0]["id"] if rest else ""})
-        return {"mv": self._app.mv_state(), "cfg": self._app.cfg_view()}
-
-    def mv_rename(self, vid, name):
-        self._app.engine.voice_local.rename_voice(vid, str(name))
-        return self._app.mv_state()
-
-    def mv_refresh(self):
-        return self._app.mv_state()
-
-    def mv_reload(self):
-        e = self._app.engine
-        e.local_voice.load_async(then=e.voice_loaded)
-
-    def mv_use_gpu(self):
-        """Close Mirage, swap PyTorch for the graphics card version in a console window, start again."""
-        flags = 0x00000010 if M.SYSTEM == "Windows" else 0  # its own console window, so the download shows
-        subprocess.Popen([str(python_console()), str(M.BASE_DIR / "voice_local.py"), "--gpu", str(os.getpid())],
-                         cwd=str(M.BASE_DIR), creationflags=flags)
-        threading.Thread(target=self._app.quit, daemon=True).start()
-
-    def mv_play(self, vid):
-        e = self._app.engine
-        v = e.voice_local.get_voice(vid)
-        if not v or not e.local_voice.ready():
+        if not e.speech.ready():
             return
 
         def work():
+            _, speed, pitch, robot = e.voice_settings()
+            name = next((v[2].split(" ·")[0] for v in e.speech_mod.VOICES if v[1] == voice), "Mirage")
             try:
-                speed = max(0.5, min(2.0, int(e.cfg.get("voice_rate", 185)) / 185))
-                e.local_voice.speak(f"Hello. This is {v['name']}.", v, speed, e.cfg.get("mirage_voice_quality", "balanced"),
-                                    float(e.cfg.get("voice_volume", 1.0)))
+                e.speech.speak(f"Hi, I'm {name}. This is how I'd sound as Mirage.", voice, speed, pitch, robot,
+                               float(e.cfg.get("voice_volume", 1.0)))
             except Exception as err:
-                M.log(f"Playing voice {vid} failed: {err}")
-                e.local_voice.last_error = f"{type(err).__name__}: {err}"
-                self._app.push("state", {"mv": self._app.mv_state()})
                 self._app.push("toast", f"Couldn't play it: {err}")
         threading.Thread(target=work, daemon=True).start()
 
@@ -401,19 +309,6 @@ class Bridge:
         self._app.push("toast", "A window opened. Log in there, then come back.", )
         threading.Thread(target=self._app.watch_login, daemon=True).start()
 
-    # ---- hearing ----
-    def install_whisper(self):
-        a = self._app
-
-        def work():
-            ok = a.engine.hearing.install_whisper(lambda m: a.push("progress", ["whisperState", m, "wait"]))
-            if ok and a.engine.cfg.get("hearing") == "whisper":
-                a.engine.update_config({"hearing": "whisper"})
-            a.push("state", {"whisper": a.whisper_state()})
-            if not ok:
-                a.push("toast", "Whisper didn't install. The error is next to the button.")
-        threading.Thread(target=work, daemon=True).start()
-
     # ---- app ----
     def set_startup(self, enabled):
         try:
@@ -486,21 +381,9 @@ class App:
         c.setdefault("voice_commands", [])
         return c
 
-    def mv_state(self):
+    def speech_state(self):
         e = self.engine
-        vl = e.voice_local
-        st = e.local_voice.status()
-        st["voices"] = [{"id": v["id"], "name": v["name"], "kind": v.get("kind", ""), "source": v.get("source", ""),
-                         "vs_id": v.get("vs_id", "")}
-                        for v in vl.list_voices()]
-        st["vs"] = [v for v in vl.voicestudio_voices() if v["has_audio"] or v["instruct"]]
-        st["options"] = vl.DESIGN_OPTIONS
-        return st
-
-    def whisper_state(self):
-        e = self.engine
-        return {"installed": e.hearing.whisper_installed(),
-                "ready": e.whisper.ready(e.cfg.get("whisper_model", "base.en"))}
+        return e.speech.status() if getattr(e, "speech", None) else {"installed": False, "state": "off", "voices": []}
 
     def claude_state(self):
         import brains
@@ -578,13 +461,9 @@ class App:
                 self.tray.notify(data, "Mirage reminder")
             except Exception:
                 pass
-        elif kind == "mirage_voice":
+        elif kind == "speech":
             if getattr(self, "engine", None) is not None:  # not while the engine is still starting
-                self.push("state", {"mv": self.mv_state(), "cfg": self.cfg_view()})
-            return
-        elif kind == "whisper_status":
-            ok, msg = data
-            self.push("progress", ["whisperState", msg, "ok" if ok else ("bad" if ok is False else "wait")])
+                self.push("state", {"speech": self.speech_state(), "cfg": self.cfg_view()})
             return
         self.push(kind, data)
 

@@ -39,7 +39,7 @@ UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
 KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
-                  "memory", "reminders.json", ".webview", "voices", "voice_model", "voice_cache"}
+                  "memory", "reminders.json", ".webview", "voices", "voice_model", "voice_cache", "speech"}
 
 
 def read_version() -> str:
@@ -78,8 +78,9 @@ DEFAULT_CONFIG = {
     "command_timeout_seconds": 6,
     "input_device": None,          # None = system default microphone
     "voice_engine": "windows",     # "windows", "mirage" (Mirage's own AI voice) or "voicestudio"
-    "mirage_voice": "",            # which of Mirage's own voices to use (id in the voices folder)
-    "mirage_voice_quality": "balanced",  # fast, balanced, best
+    "kokoro_voice": "af_bella",    # Mirage's own voice (Kokoro), see speech.VOICES
+    "voice_pitch": 0,              # semitones, -6 to 6
+    "voice_robot": 0,              # 0 to 100: how robotic the hologram sounds
     "voice_id": "",                # "" = system default voice
     "voicestudio_url": "http://localhost:3900",
     "voicestudio_voice": "",       # VoiceStudio voice/profile id ("" = its default)
@@ -94,8 +95,6 @@ DEFAULT_CONFIG = {
     "hologram_style": "logo",            # "logo" (purple headband) or "orb"
     "subtitles_enabled": True,           # show Mirage's replies as text under the hologram
     "subtitles_show_you": False,         # also show what you said
-    "hearing": "vosk",                   # "vosk" (fast) or "whisper" (accurate)
-    "whisper_model": "base.en",          # tiny.en, base.en, small.en
     "vault_path": "",                    # Obsidian vault folder ("" = Mirage's own memory folder)
     "daily_log": False,                  # write a daily log note of what you and Mirage said
     "weather_city": "",
@@ -365,7 +364,7 @@ class Voice:
             if cfg.get("voice_engine") == "voicestudio":
                 spoken = self._speak_voicestudio(text, cfg)
             elif cfg.get("voice_engine") == "mirage":
-                spoken = self._speak_local(text, cfg)
+                spoken = self._speak_kokoro(text)
             if tts and not spoken:
                 try:
                     tts.setProperty("rate", int(cfg.get("voice_rate", 185)))
@@ -413,28 +412,26 @@ class Voice:
                                            "Make sure VoiceStudio is open.")
             return False
 
-    def _speak_local(self, text, cfg) -> bool:
+    def _speak_kokoro(self, text) -> bool:
         engine = self.engine
-        lv, vl = engine.local_voice, engine.voice_local
-        if not lv.ready() and vl.installed():
-            lv.load_async(then=engine.voice_loaded)
-            if lv._loader is not None:
-                lv._loader.join(90)  # it's loading (takes up to a minute); wait rather than switch voices
-        if not lv.ready():
+        sp = engine.speech
+        if not sp.ready() and engine.speech_mod.installed():
+            sp.load_async(then=engine.speech_loaded)
+            sp.wait_loaded(60)  # it's loading (a few seconds); wait rather than switch voices
+        if not sp.ready():
             if not self._lv_warned:
                 self._lv_warned = True
                 engine.emit("system", "Mirage's own voice isn't installed yet (Settings > Voice), so I'm using the Windows voice."
-                            if not vl.installed() else "My voice didn't load, so I'm using the Windows voice. " + lv.detail)
+                            if not engine.speech_mod.installed() else "My voice didn't load, so I'm using the Windows voice. " + sp.detail)
             return False
         try:
-            voice = vl.get_voice(cfg.get("mirage_voice"))
-            speed = max(0.5, min(2.0, int(cfg.get("voice_rate", 185)) / 185))
-            lv.speak(text, voice, speed, cfg.get("mirage_voice_quality", "balanced"), float(cfg.get("voice_volume", 1.0)))
+            voice, speed, pitch, robot = engine.voice_settings()
+            sp.speak(text, voice, speed, pitch, robot, float(engine.cfg.get("voice_volume", 1.0)))
             self._lv_warned = False
             return True
         except Exception as e:
-            log(f"Built-in voice failed: {e}")
-            lv.last_error = f"{type(e).__name__}: {e}"
+            log(f"Mirage's voice failed: {e}")
+            sp.last_error = f"{type(e).__name__}: {e}"
             if not self._lv_warned:
                 self._lv_warned = True
                 engine.emit("system", f"My voice had a problem ({e}), so I'm using the Windows voice for now.")
@@ -653,10 +650,8 @@ class Engine:
         self._wake_cache = (None, None)
         global GITHUB_TOKEN
         GITHUB_TOKEN = (self.cfg.get("github_token") or "").strip()
-        import hearing
         import skills
         self.skills = skills
-        self.hearing = hearing
         try:
             if skills.fix_vault_setting(self.cfg, log):
                 save_config(self.cfg)
@@ -664,16 +659,11 @@ class Engine:
             log(f"Couldn't repair the vault setting: {e}")
         self.memory = skills.Memory(lambda: self.cfg)
         self.reminders = skills.Reminders(self._reminder_due)
-        self.whisper = hearing.Whisper(log=log)
         self._last_reply = None
-        if self.cfg.get("hearing") == "whisper" and hearing.whisper_installed():
-            self.whisper.load_async(self.cfg.get("whisper_model", "base.en"))
-        import voice_local
-        self.voice_local = voice_local
-        self.local_voice = voice_local.LocalVoice(log=log, on_change=lambda: self.emit("mirage_voice"),
-                                                  whisper=self.whisper)
-        if self.cfg.get("voice_engine") == "mirage":
-            self.local_voice.load_async(then=self.voice_loaded)
+        import speech
+        self.speech_mod = speech
+        self.speech = speech.Speech(log=log, on_change=lambda: self.emit("speech"))
+        self.speech.load_async(then=self.speech_loaded)
         self.voice = Voice(self)
         self.actions = Actions(self)
         import brains
@@ -746,17 +736,8 @@ class Engine:
             self.brains["api"].reload()
         if "claude_model" in changes or "claude_power" in changes:
             threading.Thread(target=self.brains["claude_code"].reset, daemon=True).start()
-        if self.cfg.get("hearing") == "whisper" and ("hearing" in changes or "whisper_model" in changes):
-            if self.hearing.whisper_installed():
-                self.whisper.load_async(self.cfg.get("whisper_model", "base.en"),
-                                        lambda ok, msg: self.emit("whisper_status", (ok, msg)))
-        if "voice_engine" in changes and changes["voice_engine"] != old.get("voice_engine"):
-            if changes["voice_engine"] == "mirage":
-                self.local_voice.load_async(then=self.voice_loaded)
-            else:  # give the graphics card's memory back
-                threading.Thread(target=self.local_voice.unload, daemon=True).start()
         if self.cfg.get("voice_engine") == "mirage" and any(
-                k in changes and changes[k] != old.get(k) for k in ("mirage_voice", "voice_rate", "mirage_voice_quality")):
+                k in changes and changes[k] != old.get(k) for k in ("kokoro_voice", "voice_rate", "voice_pitch", "voice_robot", "voice_engine")):
             self.warm_voice()
         if "weather_city" in changes:
             self.cfg["weather_location"] = None
@@ -764,41 +745,30 @@ class Engine:
             global GITHUB_TOKEN
             GITHUB_TOKEN = (changes["github_token"] or "").strip()
 
-    def warm_voice(self):
-        """Prepare the lines Mirage says most in the current voice, speed and quality."""
-        if self.local_voice.ready():
-            self.local_voice.warm_up(self.voice_local.get_voice(self.cfg.get("mirage_voice")),
-                                     max(0.5, min(2.0, int(self.cfg.get("voice_rate", 185)) / 185)),
-                                     self.cfg.get("mirage_voice_quality", "balanced"))
+    COMMON_LINES = ["Mirage online.", "Yes?", "Done.", "Playing.", "Paused.", "Got it. I'll remember that.",
+                    "Hello. This is how I sound.", "It's already playing.", "It's already paused.", "Here I am.",
+                    "How long should the timer be?", "Something went wrong.", "Opening it."]
 
-    def voice_loaded(self):
-        """Once Mirage's own voice is ready, make sure there's a voice picked to speak with."""
-        vl = self.voice_local
-        if vl.get_voice(self.cfg.get("mirage_voice")):
-            self.warm_voice()
-            return
-        voices = vl.list_voices()
-        if not voices:  # first time: bring over the voices made in VoiceStudio
-            for v in vl.voicestudio_voices():
-                if v["demo"]:
-                    continue
-                try:
-                    vl.import_voicestudio(v["vs_id"])
-                except Exception as e:
-                    log(f"Couldn't bring over the VoiceStudio voice {v['name']}: {e}")
-            voices = vl.list_voices()
-            if voices:
-                self.emit("system", "Brought over your VoiceStudio voices: " + ", ".join(v["name"] for v in voices) + ".")
-        if not voices:
-            try:
-                self.local_voice.design_preview(vl.DEFAULT_DESIGN, seed=7, play=False)
-                voices = [self.local_voice.design_save("Mirage")]
-            except Exception as e:
-                log(f"Couldn't make a starting voice: {e}")
-                return
-        pick = next((v for v in voices if v.get("vs_id") and v["vs_id"] == self.cfg.get("voicestudio_voice")), voices[0])
-        self.update_config({"mirage_voice": pick["id"]})  # also prepares its common lines
-        self.emit("mirage_voice")
+    def voice_settings(self):
+        c = self.cfg
+        return (c.get("kokoro_voice") or self.speech_mod.DEFAULT_VOICE,
+                max(0.5, min(2.0, int(c.get("voice_rate", 185)) / 185)),
+                int(c.get("voice_pitch", 0) or 0), int(c.get("voice_robot", 0) or 0))
+
+    def warm_voice(self):
+        """Prepare the lines Mirage says most with the current voice settings, so they play instantly."""
+        if self.speech.ready() and self.cfg.get("voice_engine") == "mirage":
+            self.speech.warm_up(*self.voice_settings(), self.COMMON_LINES)
+
+    def speech_loaded(self):
+        """Mirage's own voice and ears are ready: switch the microphone over to them and tidy up."""
+        if self.cfg.get("voice_engine") == "windows" and not self.cfg.get("_speech_switched"):
+            self.update_config({"voice_engine": "mirage", "_speech_switched": True})  # first time: use the new voice
+        self.warm_voice()
+        if getattr(self, "_on_vosk", False):
+            self._restart_audio.set()  # hear with Parakeet from now on
+        threading.Thread(target=self.speech_mod.remove_old_engines, args=(log,), daemon=True).start()
+        self.emit("speech")
 
     @property
     def wake_re(self):
@@ -809,9 +779,6 @@ class Engine:
         return self._wake_cache[1]
 
     # ---- background threads ----
-    def _whisper_on(self):
-        return self.cfg.get("hearing") == "whisper" and self.whisper.ready(self.cfg.get("whisper_model", "base.en"))
-
     def _worker(self):
         while self.running:
             item = self.cmd_q.get()
@@ -819,22 +786,6 @@ class Engine:
                 break
             self.set_status("thinking")
             text = item
-            if isinstance(item, tuple):  # ("audio", pcm, vosk_text, had_wake_word)
-                _, pcm, fallback, had_wake = item
-                try:
-                    heard = self.whisper.transcribe(pcm)
-                    found, cleaned = self.hearing.strip_wake(heard, self.cfg.get("wake_words", []))
-                    log(f"Whisper heard: {heard!r}")
-                    text = cleaned if cleaned else fallback
-                    if had_wake and not found and fallback:
-                        # Whisper didn't write the wake word; trust it only if it's close in length
-                        text = cleaned if len(cleaned.split()) <= len(fallback.split()) + 2 else fallback
-                except Exception as e:
-                    log(f"Whisper failed, using fast recognizer text: {e}")
-                    text = fallback
-                if not text:
-                    self.set_status(self.idle_status())
-                    continue
             self._last_reply = None
             try:
                 self.handle(text)
@@ -846,44 +797,118 @@ class Engine:
                 self.set_status(self.idle_status())
 
     def _audio_loop(self):
-        try:
-            self.set_status("loading", "Preparing speech recognition…")
-            ensure_model(lambda msg: self.set_status("loading", msg))
-            import sounddevice as sd
-            from vosk import Model, KaldiRecognizer, SetLogLevel
-            SetLogLevel(-1)
-            model = Model(str(MODEL_DIR))
-        except Exception as e:
-            log(f"Speech recognition failed to load: {e}")
-            self.mic_error = True
-            self.set_status("error", f"Speech recognition failed to load: {e}")
-            return
-
+        self.set_status("loading", "Preparing speech recognition…")
+        if self.speech_mod.installed():
+            self.speech.wait_loaded(90)
+        model = None
         first = True
         while self.running:
             self._restart_audio.clear()
             audio_q: "queue.Queue" = queue.Queue()
+            parakeet = self.speech.ready()
+            if not parakeet and model is None:
+                try:  # the basic recognizer, until Mirage's own ears are installed
+                    ensure_model(lambda msg: self.set_status("loading", msg))
+                    from vosk import Model, KaldiRecognizer, SetLogLevel
+                    SetLogLevel(-1)
+                    model = Model(str(MODEL_DIR))
+                except Exception as e:
+                    log(f"Speech recognition failed to load: {e}")
+                    self.mic_error = True
+                    self.set_status("error", f"Speech recognition failed to load: {e}")
+                    self._restart_audio.wait(30)
+                    continue
+            self._on_vosk = not parakeet
 
             def callback(indata, frames, t, status):
                 audio_q.put(bytes(indata))
 
             try:
+                import sounddevice as sd
                 device = resolve_input_device(self.cfg.get("input_device"))
-                rec = KaldiRecognizer(model, SAMPLE_RATE)
+                rec = None
+                if not parakeet:
+                    from vosk import KaldiRecognizer
+                    rec = KaldiRecognizer(model, SAMPLE_RATE)
                 with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=2000, dtype="int16",
                                        channels=1, device=device, callback=callback):
                     self.mic_error = False
                     self.set_status(self.idle_status())
-                    log(f"Listening on: {self.cfg.get('input_device') or 'default microphone'}")
+                    log(f"Listening on: {self.cfg.get('input_device') or 'default microphone'}"
+                        f" ({'Parakeet' if parakeet else 'basic recognizer'})")
                     if first:
                         first = False
                         self.voice.say("Mirage online.")
-                    self._listen(rec, audio_q)
+                    if parakeet:
+                        self._listen_parakeet(audio_q)
+                    else:
+                        self._listen(rec, audio_q)
             except Exception as e:
                 log(f"Microphone error: {e}")
                 self.mic_error = True
                 self.set_status("error", f"Microphone problem: {e}")
                 self._restart_audio.wait(5)
+
+    def _listen_parakeet(self, audio_q):
+        """Cut the mic into pieces of speech; a separate thread writes each down and looks for the wake word."""
+        import numpy as np
+        listener = self.speech_mod.Listener(self.speech)
+        pieces: "queue.Queue" = queue.Queue()
+        stop = threading.Event()
+        threading.Thread(target=self._ears, args=(pieces, stop), daemon=True, name="mirage-ears").start()
+        try:
+            while self.running and not self._restart_audio.is_set():
+                try:
+                    data = audio_q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if self.mic_muted:
+                    self.emit("level", 0.0)
+                    listener.reset()
+                    continue
+                x = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768
+                self.emit("level", float(np.max(np.abs(x))) if len(x) else 0.0)
+                if self.voice.speaking.is_set():
+                    listener.reset()  # don't listen to ourselves
+                    continue
+                if self.status == "awaiting" and time.time() > self.awaiting_until:
+                    self.set_status(self.idle_status())
+                for piece in listener.feed(x):
+                    pieces.put(piece)
+        finally:
+            stop.set()
+            pieces.put(None)
+
+    def _ears(self, pieces, stop):
+        timeout = lambda: float(self.cfg.get("command_timeout_seconds", 6))
+        while not stop.is_set():
+            piece = pieces.get()
+            if piece is None:
+                break
+            try:
+                heard = self.speech.transcribe(piece)
+            except Exception as e:
+                log(f"Hearing failed: {e}")
+                continue
+            if not heard:
+                continue
+            found, command = self.speech_mod.strip_wake(heard, self.cfg.get("wake_words", []))
+            if found:
+                log(f"Heard: {heard!r}")
+                if command:
+                    self.awaiting_until = 0
+                    self.cmd_q.put(command)
+                else:
+                    self.emit("wake")
+                    if self.cfg.get("wake_sound", True):
+                        beep()
+                    self.awaiting_until = time.time() + timeout() + 2
+                    self.set_status("awaiting")
+                    self.voice.say("Yes?", show=False)
+            elif time.time() < self.awaiting_until and command:
+                log(f"Heard: {heard!r}")
+                self.awaiting_until = 0
+                self.cmd_q.put(command)
 
     def _listen(self, rec, audio_q):
         timeout = lambda: float(self.cfg.get("command_timeout_seconds", 6))
@@ -921,7 +946,7 @@ class Engine:
                 command = text[m.end():].strip()
                 if command:
                     self.awaiting_until = 0
-                    self.cmd_q.put(("audio", pcm, command, True) if self._whisper_on() else command)
+                    self.cmd_q.put(command)
                 else:
                     self.emit("wake")
                     if self.cfg.get("wake_sound", True):
@@ -931,7 +956,7 @@ class Engine:
                     self.voice.say("Yes?", show=False)
             elif time.time() < self.awaiting_until:
                 self.awaiting_until = 0
-                self.cmd_q.put(("audio", pcm, text, False) if self._whisper_on() else text)
+                self.cmd_q.put(text)
 
     def saved_playlist(self, name):
         lists = {k.lower(): v for k, v in (self.cfg.get("spotify_playlists") or {}).items()}

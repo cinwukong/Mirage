@@ -13,3 +13,5 @@ reminders.json
 voices/
 voice_model/
 voice_cache/
+speech/
+voice_lines/

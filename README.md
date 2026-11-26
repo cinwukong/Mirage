@@ -24,7 +24,7 @@ hidden in the tray when you log in. Updates install from **Settings → App → 
 - **Memory**: things Mirage remembers, your to-do list and reminders. Add, tick off or delete.
 - **Shortcuts**: your own voice commands ("mirage good morning" → open Spotify), plus websites,
   apps and Roblox games Mirage can open.
-- **Settings**: brain, listening (microphone, wake words, Whisper), voice (Windows, Built-in or VoiceStudio),
+- **Settings**: brain, listening (microphone, wake words, hearing), voice (Mirage, Windows or VoiceStudio),
   hologram, memory (Obsidian vault), skills (weather city, music) and app options.
 
 ## Spotify
@@ -32,14 +32,15 @@ Save playlists on the **Shortcuts** page (in Spotify: right-click a playlist →
 Then "mirage play chill" or "mirage switch to gym" opens it in the Spotify app and presses play.
 "mirage stop the music", "play music", "next song" and "what's playing" work too. No Spotify login needed.
 
-## Mirage's own voice
-**Settings → Voice → Built-in** runs an AI voice (OmniVoice) inside Mirage, so no other app has to be
-open. Click **Install** once: it downloads PyTorch for your graphics card and the voice model, about
-6 GB in all. Then make voices three ways:
-- **Describe it**: pick voice, age, pitch and accent, listen to takes and keep the one you like.
-- **Clone a recording**: 5 to 15 seconds of one person talking clearly.
-- **From VoiceStudio**: voices you made in VoiceStudio come over on their own the first time, and
-  can be brought over again any time. VoiceStudio doesn't need to be open or even installed after that.
+## Mirage's own voice and hearing
+**Settings → Voice → Mirage → Install** downloads Mirage's voice and ears (about 830 MB), which run on this PC
+with no other apps:
+- **Voice:** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), 28 English voices (Bella is the
+  default), with pitch and a robotic "hologram" effect. Lines Mirage says often are saved, so they play instantly.
+- **Hearing:** NVIDIA [Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) (CC-BY-4.0) writes
+  down what you say, and Silero VAD (MIT) tells when you're talking. Parakeet also listens for "mirage".
+- Both run with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0). Models are stored in
+  `%LOCALAPPDATA%\Mirage\speech`.
 
 ## Files
 - `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
@@ -47,6 +48,6 @@ open. Click **Install** once: it downloads PyTorch for your graphics card and th
 - `mirage.py`: listening, speaking and the built-in shortcuts
 - `brains.py`: Claude Code and API-key brains, and the skills they can use
 - `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio; `spotify.py`: Spotify control
-- `hearing.py`: Whisper; `hologram.py`: the corner hologram; `voice_local.py`: Mirage's own voice
+- `hologram.py`: the corner hologram; `speech.py`: Mirage's own voice and hearing
 - `config.json`, `memory/`, `reminders.json`, `model/` and `voices/` are kept on your PC and never uploaded.
   The voice model is stored in `%LOCALAPPDATA%\Mirage\voice_model`, outside the Mirage folder.
