@@ -72,6 +72,15 @@ with no other apps:
   yesterday?" or search them on the Memory page. Turn it off or delete it under **Settings → Memory**.
 - Everything is grouped by who or what it's about on the Memory page, and stays as linked notes in Obsidian.
 
+## Speaking up on its own
+- Mirage sometimes says something without being asked, but only when it's worth it: a date it remembers is
+  coming up ("Heads up for tomorrow: Emma's birthday"), a task in your notes is due (Obsidian Tasks style
+  `- [ ] essay 📅 2026-12-01`), and once a day in the afternoon your to-do list. At most one every 20 minutes.
+- It waits for a good moment: you're at the PC, Mirage isn't busy, nothing is running full screen, and it's not
+  quiet hours (23:00 to 08:00 by default). While a game fills the screen the hologram stays hidden too.
+- **Quiet mode:** "do not disturb for two hours", "quiet mode until 6 pm", "you can talk again".
+- Your own reminders and timers always come through. Optional break reminders. All under **Settings → Speaking up**.
+
 ## Windows and using your PC
 - **Window shortcuts** (no brain needed): "switch to Discord", "snap this left", "put Chrome and Discord side by
   side", "move this to my other screen", "minimize Spotify", "minimize everything", "maximize", "what's open",

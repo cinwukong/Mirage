@@ -84,6 +84,15 @@ DEFAULT_CONFIG = {
     "pc_control": True,            # the brain may use the mouse and keyboard (Esc stops it)
     "auto_learn": True,            # Mirage's own brain notices lasting facts about you in conversations
     "chat_history": True,          # keep a searchable history of conversations on this PC
+    "nudges": True,                # Mirage may speak up on its own (dates, due tasks, to-dos)
+    "nudge_todos": True,           # once a day in the afternoon, if the to-do list has things on it
+    "quiet_hours": True,
+    "quiet_from": 23,              # no speaking up on its own from this hour…
+    "quiet_to": 8,                 # …until this one
+    "quiet_in_games": True,        # stay quiet and hide the hologram while something runs full screen
+    "break_reminders": False,
+    "break_minutes": 90,
+    "dnd_until": 0,                # "do not disturb" until this time
     "input_device": None,          # None = system default microphone
     "voice_engine": "windows",     # "windows", "mirage" (Mirage's own AI voice) or "voicestudio"
     "kokoro_voice": "af_bella",    # Mirage's own voice (Kokoro), see speech.VOICES
@@ -795,7 +804,10 @@ class Engine:
             log(f"Couldn't repair the vault setting: {e}")
         self.memory = skills.Memory(lambda: self.cfg)
         import recall
+        import presence
         self.recall = recall
+        self.presence = presence
+        self.gaming = ""                  # the app running full screen right now, if any
         try:
             self.chats = recall.ChatLog(redact=skills.redact)
         except Exception as e:
@@ -813,6 +825,7 @@ class Engine:
         self.pc = pc
         self._confirming = None          # (event, answer) while Mirage waits for a yes or no
         self.hands = pc.Hands(log=log, confirm=self.confirm, on_start=self._hands_on, on_end=self._hands_off)
+        self.nudger = presence.Nudger(self, state_path=recall.HOME / "nudges.json", log=log)
         import brains
         self.brains = {"local": brains.LocalBrain(self), "claude_code": brains.ClaudeCodeBrain(self),
                        "api": brains.ApiBrain(self), "off": brains.OffBrain()}
@@ -878,6 +891,7 @@ class Engine:
         threading.Thread(target=self._audio_loop, daemon=True, name="mirage-audio").start()
         threading.Thread(target=self._worker, daemon=True, name="mirage-worker").start()
         threading.Thread(target=self._learn_loop, daemon=True, name="mirage-learn").start()
+        threading.Thread(target=self._presence_loop, daemon=True, name="mirage-presence").start()
 
     def stop(self):
         self.running = False
@@ -940,6 +954,41 @@ class Engine:
         answer["said"] = text
         ev.set()
         return True
+
+    # ---- speaking up on its own ----
+    def _presence_loop(self):
+        """Every few seconds: is something running full screen? Every minute: anything worth speaking up about?"""
+        last_tick = time.time()
+        while self.running:
+            time.sleep(5)
+            try:
+                game = self.presence.fullscreen_app() if self.cfg.get("quiet_in_games", True) else ""
+                if bool(game) != bool(self.gaming):
+                    log(f"Full screen: {game}. Staying quiet." if game else "Nothing full screen any more.")
+                    self.emit("gaming", game)
+                self.gaming = self.nudger.gaming = game
+                if time.time() - last_tick >= 60:
+                    last_tick = time.time()
+                    self.nudger.tick()
+            except Exception as e:
+                log(f"Presence check failed: {e}")
+                time.sleep(30)
+
+    def speak_up(self, text):
+        """Mirage says something on its own. Afterwards it listens for a moment, so you can answer."""
+        log(f"Speaking up: {text}")
+        if self.cfg.get("wake_sound", True):
+            beep()
+        with self._follow_lock:
+            self._follow_pending = self.follow_up_on()
+        self.voice.say(text)
+
+    def dnd_text(self):
+        """When quiet mode ends, said naturally: "17:30", "tomorrow at 08:00". "" when it's off."""
+        until = float(self.cfg.get("dnd_until", 0) or 0)
+        if until <= time.time():
+            return ""
+        return re.sub(r"^(?:today )?at ", "", self.skills.say_time(datetime.fromtimestamp(until)))
 
     # ---- learning about you ----
     def _learn_loop(self):
@@ -1526,7 +1575,8 @@ class Engine:
             if phrase and plain == phrase:
                 return say(self.run_voice_command(cmd))
 
-        if text in ("never mind", "nevermind", "cancel", "nothing", "stop"):
+        if text in ("never mind", "nevermind", "cancel", "nothing", "stop", "be quiet", "quiet", "shut up", "stop talking",
+                    "enough", "silence", "hush"):
             return
 
         expect, self._expect = self._expect, None
@@ -1552,6 +1602,29 @@ class Engine:
                 return
 
         # ---- memory ----
+        # ---- quiet mode ("do not disturb") ----
+        if on("quiet"):
+            pr = self.presence
+            if pr.DND_OFF.fullmatch(text) and not re.fullmatch(r"i'?m (?:back|free)(?: now)?", text):
+                was_on = float(self.cfg.get("dnd_until", 0) or 0) > time.time()
+                self.update_config({"dnd_until": 0})
+                return say("Okay, I can speak up again." if was_on else "I'm not in quiet mode.")
+            if pr.DND_OFF.fullmatch(text) and float(self.cfg.get("dnd_until", 0) or 0) > time.time():
+                self.update_config({"dnd_until": 0})
+                return say("Welcome back. I can speak up again.")
+            m = pr.DND_ON.fullmatch(text)
+            if m:
+                until = pr.dnd_until(m.group(1) or "", parse_duration, sk.parse_when)
+                self.update_config({"dnd_until": until.timestamp()})
+                return say(f"Okay, I won't speak up on my own until {self.dnd_text()}. Your reminders still come through.")
+            if re.fullmatch(r"(?:are you|is) (?:in )?(?:quiet mode|do not disturb)(?: on)?|why (?:are you|have you been) (?:so )?quiet", text):
+                why = self.nudger.good_moment()
+                if self.dnd_text():
+                    return say(f"Quiet mode is on until {self.dnd_text()}.")
+                return say("Quiet hours are on right now." if why == "quiet hours" else
+                           f"Something's full screen ({self.gaming}), so I'm keeping quiet." if self.gaming else
+                           "No, I'm not in quiet mode.")
+
         if on("memory"):
             m = re.match(r"^(?:please )?(?:remember|don'?t forget|note) (?:that )?(.+)$", text)
             if m and not text.startswith("remember to remind"):
@@ -1827,6 +1900,7 @@ BUILTIN_GROUPS = [
     ("windows", "Windows", ["switch to discord", "snap this left", "put chrome and discord side by side",
                             "move this to my other screen", "minimize everything", "what's open", "close spotify"]),
     ("pc", "Lock and close", ["lock the computer", "close this window", "close this tab"]),
+    ("quiet", "Quiet mode", ["do not disturb for 2 hours", "quiet mode until 6 pm", "you can talk again"]),
     ("greetings", "Greetings", ["hello"]),
     ("facts", "Quick facts (when Claude is off)", ["who is Sun Wukong"]),
 ]

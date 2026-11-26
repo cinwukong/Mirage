@@ -184,6 +184,8 @@ Rules:
   wording in "replaces".
 - Never include passwords, PIN codes, login codes, card or bank numbers, ID numbers, addresses, phone
   numbers or health details.
+- Write dates as real dates ("on 3 December 2026"), not "tomorrow" or "next week": today is {today}.
+  Birthdays don't need a year.
 - Write each fact as one short sentence about "the user", for example "The user's favourite colour is
   purple" or "Emma is the user's sister". Facts about something else name it: "Bullet Train is a Roblox
   murder-mystery game the user is making".
@@ -210,7 +212,8 @@ LEARN_SCHEMA = {
 def ask_for_facts(llm, conversation: str, known: list) -> list:
     """The brain's list of {topic, fact, replaces} for a conversation."""
     known_text = "\n".join(f"- {k}" for k in known[-60:]) or "(nothing yet)"
-    messages = [{"role": "system", "content": LEARN_PROMPT},
+    today = datetime.now().strftime("%A %d %B %Y")
+    messages = [{"role": "system", "content": LEARN_PROMPT.replace("{today}", today)},
                 {"role": "user", "content": f"Already known:\n{known_text}\n\nConversation:\n{conversation}\n\n"
                                             "Return the new facts as JSON."}]
     msg = llm.chat(messages, json_schema=LEARN_SCHEMA, max_tokens=500, timeout=90)

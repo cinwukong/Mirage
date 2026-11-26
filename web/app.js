@@ -465,6 +465,30 @@ const SECTIONS = [
       custom("Hearing", spInstalled() ? "Mirage writes down what you say with NVIDIA Parakeet, on this PC."
                                       : "Install Mirage's own ears for much better hearing. They come with its voice.", () => speechCtl("ears")),
     ] },
+  { id: "speaking", name: "Speaking up", intro: "When Mirage may say something without being asked. Your own reminders and timers always come through.",
+    rows: () => {
+      const hours = Array.from({ length: 24 }, (_, i) => [String(i), String(i).padStart(2, "0") + ":00"]);
+      const dnd = (C().dnd_until || 0) * 1000 > Date.now();
+      const on = C().nudges !== false;
+      return [
+        row("Let Mirage speak up on its own", "Only when it's worth it: a birthday or date it remembers is coming up, a task in your notes is due, and once a day your to-do list. It waits until you're at the PC and not busy.",
+            toggleEl(on, v => setCfg({ nudges: v }, true))),
+        on && toggle("nudge_todos", "Mention my to-do list once a day", "In the afternoon or evening, if there's something on it."),
+        on && row("Quiet hours", "No speaking up on its own during these hours.",
+            selectEl(hours, String(C().quiet_from ?? 23), v => setCfg({ quiet_from: +v })), h("span", { class: "muted" }, "to"),
+            selectEl(hours, String(C().quiet_to ?? 8), v => setCfg({ quiet_to: +v })),
+            toggleEl(C().quiet_hours !== false, v => setCfg({ quiet_hours: v }))),
+        row("Stay quiet during full-screen games", "While a game or video fills the screen, Mirage doesn't speak up and the hologram stays hidden, so nothing pops up over it. Reminders still play.",
+            toggleEl(C().quiet_in_games !== false, v => setCfg({ quiet_in_games: v }))),
+        on && row("Break reminders", "Suggests a stretch after a long time at the PC without a pause.",
+            toggleEl(!!C().break_reminders, v => setCfg({ break_reminders: v }, true))),
+        on && C().break_reminders && range("break_minutes", "Remind me after", "", 30, 180, 15, v => v + " min"),
+        custom("Quiet mode", dnd ? "On until " + new Date(C().dnd_until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) + ". Or say “mirage, you can talk again”."
+                                  : "Say “mirage, do not disturb for two hours”, or:",
+            () => [dnd ? btn("End quiet mode", () => setCfg({ dnd_until: 0 }, true))
+                       : btn("Quiet for an hour", () => setCfg({ dnd_until: Date.now() / 1000 + 3600 }, true))]),
+      ];
+    } },
   { id: "voice", name: "Voice", intro: "How Mirage talks back.",
     rows: () => [
       seg("reply_mode", "Replies", "Subtitles appear under the hologram in the corner of your screen.",

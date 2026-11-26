@@ -156,6 +156,12 @@ class Hologram:
         return img
 
     # ---------------------------------------------------------------- state
+    def set_blocked(self, blocked):
+        """Something runs full screen: stay hidden (a window popping up can knock a game out of full screen)."""
+        self.blocked = bool(blocked)
+        if self.blocked:
+            self._hide_now()
+
     def set_status(self, status):
         self.status = status
         if not self.get_cfg().get("hologram_enabled", True):
@@ -198,7 +204,7 @@ class Hologram:
         self.hide_at = time.time() + seconds
 
     def _show(self):
-        if self.visible:
+        if self.visible or getattr(self, "blocked", False):
             return
         self._place()
         self.visible = True

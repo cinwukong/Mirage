@@ -542,6 +542,8 @@ class App:
                 self.tray.notify(data, "Mirage reminder")
             except Exception:
                 pass
+        elif kind == "gaming":
+            self.holo.call("set_blocked", bool(data))  # no hologram over a full-screen game
         elif kind == "local_brain":
             if getattr(self, "engine", None) is not None:
                 self.push("state", {"local": self.local_state()})
