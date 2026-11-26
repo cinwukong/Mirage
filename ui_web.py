@@ -121,6 +121,7 @@ class Bridge:
             "speech": a.speech_state(),
             "builtins": [[g, n, ex] for g, n, ex in M.BUILTIN_GROUPS],
             "claude": a.claude_state(),
+            "local": a.local_state(),
             "startup": get_startup(),
             "update_available": a.update_available,
         }
@@ -138,6 +139,8 @@ class Bridge:
             self._app.engine.update_config(changes)
         if "voice_engine" in changes or "voicestudio_url" in changes:
             threading.Thread(target=self._app.refresh_vs, daemon=True).start()
+        if "local_model" in changes or "brain" in changes:
+            self._app.push("state", {"local": self._app.local_state()})
         return self._app.cfg_view()
 
     # ---- talking ----
@@ -297,6 +300,38 @@ class Bridge:
             a.push("progress", ["brainTest", f"{reply} ({time.time() - t0:.1f} s)" if ok else reply, "ok" if ok else "bad"])
         threading.Thread(target=work, daemon=True).start()
 
+    def install_local_brain(self, key=None):
+        a = self._app
+        e = a.engine
+        lb = e.brains["local"]
+        key = key or lb.key()
+        if lb.llm.state == "installing":
+            return
+
+        def work():
+            lb.llm._set("installing", "Starting…")
+            try:
+                ok, msg = lb.lb.install(key, lambda m: (setattr(lb.llm, "detail", m),
+                                                       a.push("progress", ["localState", m, "wait"])), log=M.log)
+            except Exception as ex:
+                ok, msg = False, f"Install failed: {ex}"
+            lb.llm._set("off" if ok else "error", msg)
+            if ok:
+                e.update_config({"local_model": key, "brain": "local"})
+                a.push("toast", "Mirage's brain is installed.")
+                a.push("state", {"local": a.local_state(), "cfg": a.cfg_view()})
+                self.test_brain()
+            else:
+                a.push("toast", "The brain didn't install. The reason is next to the button.")
+        threading.Thread(target=work, daemon=True).start()
+
+    def remove_local_model(self, key):
+        lb = self._app.engine.brains["local"]
+        if lb.llm.key == key:
+            lb.stop()
+        lb.lb.remove_model(key)
+        return self._app.local_state()
+
     def install_claude(self):
         a = self._app
 
@@ -404,6 +439,16 @@ class App:
         e = self.engine
         return e.speech.status() if getattr(e, "speech", None) else {"installed": False, "state": "off", "voices": []}
 
+    def local_state(self):
+        e = self.engine
+        lb = e.brains["local"]
+        key = lb.key()
+        return {"state": lb.llm.state, "detail": lb.llm.detail, "model": key, "engine": lb.lb.engine_ready(),
+                "installed": lb.lb.installed(key), "download_mb": lb.lb.download_mb(key), "running": lb.llm.running(),
+                "gpu": lb.llm.uses_gpu() if lb.llm.running() else None,
+                "models": [[k, m["name"], m["blurb"], lb.lb.model_ready(k), round((m["size"] + m["mmproj_size"]) / 1e9, 1)]
+                           for k, m in lb.lb.MODELS.items()]}
+
     def claude_state(self):
         import brains
         b = brains.ClaudeCodeBrain
@@ -480,6 +525,10 @@ class App:
                 self.tray.notify(data, "Mirage reminder")
             except Exception:
                 pass
+        elif kind == "local_brain":
+            if getattr(self, "engine", None) is not None:
+                self.push("state", {"local": self.local_state()})
+            return
         elif kind == "speech":
             if getattr(self, "engine", None) is not None:  # not while the engine is still starting
                 self.push("state", {"speech": self.speech_state(), "cfg": self.cfg_view()})

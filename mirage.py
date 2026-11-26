@@ -102,7 +102,11 @@ DEFAULT_CONFIG = {
     "music_service": "youtube",          # what "play ..." uses: youtube or spotify
     "roblox_games": {},                  # name -> .rbxl file path or place id
     "spotify_playlists": {},             # name -> Spotify link (playlist, album, artist…)
-    "brain": "claude_code",              # "claude_code", "api" or "off"
+    "brain": "local",                    # "local" (Mirage's own AI), "claude_code", "api" or "off"
+    "local_model": "qwen3.5-9b",         # see local_brain.MODELS
+    "brain_idle_minutes": 5,             # the local brain hands graphics memory back after this long unused
+    "think_hard_claude": True,           # "think hard ..." goes to Claude when Claude Code is set up
+    "personality": "",                   # how Mirage should come across, in the user's words
     "claude_model": "haiku",             # haiku (fast), sonnet (balanced), opus (smartest)
     "claude_power": False,               # let Claude Code run commands and edit files
     "voice_commands": [],                # your own shortcuts: {"phrase", "action", "target"}
@@ -667,8 +671,8 @@ class Engine:
         self.voice = Voice(self)
         self.actions = Actions(self)
         import brains
-        self.brains = {"claude_code": brains.ClaudeCodeBrain(self), "api": brains.ApiBrain(self),
-                       "off": brains.OffBrain()}
+        self.brains = {"local": brains.LocalBrain(self), "claude_code": brains.ClaudeCodeBrain(self),
+                       "api": brains.ApiBrain(self), "off": brains.OffBrain()}
 
     # ---- events / status ----
     @property
@@ -706,6 +710,10 @@ class Engine:
 
     def stop(self):
         self.running = False
+        try:
+            self.brains["local"].stop()
+        except Exception:
+            pass
         self._restart_audio.set()
         self.cmd_q.put(None)
         self.voice.q.put(None)
@@ -736,6 +744,10 @@ class Engine:
             self.brains["api"].reload()
         if "claude_model" in changes or "claude_power" in changes:
             threading.Thread(target=self.brains["claude_code"].reset, daemon=True).start()
+        if changes.get("local_model", old.get("local_model")) != old.get("local_model") or (
+                "brain" in changes and changes["brain"] != "local" and old.get("brain") == "local") or (
+                "brain_idle_minutes" in changes and changes["brain_idle_minutes"] != old.get("brain_idle_minutes")):
+            threading.Thread(target=self.brains["local"].stop, daemon=True).start()  # restarts on the next question
         if self.cfg.get("voice_engine") == "mirage" and any(
                 k in changes and changes[k] != old.get(k) for k in ("kokoro_voice", "voice_rate", "voice_pitch", "voice_robot", "voice_engine")):
             self.warm_voice()

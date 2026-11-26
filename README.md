@@ -32,6 +32,17 @@ Save playlists on the **Shortcuts** page (in Spotify: right-click a playlist →
 Then "mirage play chill" or "mirage switch to gym" opens it in the Spotify app and presses play.
 "mirage stop the music", "play music", "next song" and "what's playing" work too. No Spotify login needed.
 
+## Mirage's own brain
+**Settings → Brain → Mirage → Install** downloads [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and an
+open AI model that runs on your graphics card: **Qwen3.5 9B** (smarter, about 7 GB with its vision add-on) or
+**Gemma 4 E4B** (lighter, about 6 GB). Both are Apache-2.0, use Mirage's skills as tools, and can look at your screen.
+- Free and private: nothing leaves your PC, and there are no usage limits.
+- After a few idle minutes it hands graphics memory back (for games) and wakes up on the next question.
+- Start a question with **"think hard"** for tough ones: Claude answers if Claude Code is set up, otherwise the
+  local model takes longer to think it through.
+- Write Mirage's **personality** in your own words under Settings → Brain.
+- Stored in `%LOCALAPPDATA%\Mirage\brain`.
+
 ## Mirage's own voice and hearing
 **Settings → Voice → Mirage → Install** downloads Mirage's voice and ears (about 830 MB), which run on this PC
 with no other apps:
@@ -46,6 +57,7 @@ with no other apps:
 - `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
 - `ui_web.py` + `web/`: the window and interface
 - `mirage.py`: listening, speaking and the built-in shortcuts
+- `local_brain.py`: Mirage's own brain (llama.cpp)
 - `brains.py`: Claude Code and API-key brains, and the skills they can use
 - `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio; `spotify.py`: Spotify control
 - `hologram.py`: the corner hologram; `speech.py`: Mirage's own voice and hearing

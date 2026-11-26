@@ -1,6 +1,7 @@
 """
 Mirage's brains: what answers when no shortcut matches.
 
+- LocalBrain: Mirage's own AI on this PC (llama.cpp). Free and private; "think hard" can go to Claude.
 - ClaudeCodeBrain: Claude Code through the Claude Agent SDK. Uses the user's Claude login,
   keeps a conversation going, and can use Mirage's own skills as tools.
 - ApiBrain: Claude through an Anthropic API key (pay per use).
@@ -29,6 +30,12 @@ PERSONA = (
     "whenever they help. When the user tells you something about themselves or their projects that is "
     "worth keeping, save it with remember. If you did something, say briefly what you did."
 )
+
+
+def persona(engine) -> str:
+    """Who Mirage is, plus the personality the user wrote in Settings."""
+    extra = (engine.cfg.get("personality") or "").strip()
+    return PERSONA + (f"\n\nYour personality, as the user describes it: {extra}" if extra else "")
 
 
 def _log(msg):
@@ -258,7 +265,7 @@ class ClaudeCodeBrain:
         if power:
             allowed += self.POWER_TOOLS
         return ClaudeAgentOptions(
-            system_prompt=PERSONA,
+            system_prompt=persona(self.e),
             model=cfg.get("claude_model") or "haiku",
             mcp_servers={"mirage": self._mcp_server()},
             allowed_tools=allowed,
@@ -411,7 +418,7 @@ class ApiBrain:
         messages = self.history[-10:] + [{"role": "user", "content": content}]
         while messages and messages[0]["role"] != "user":
             messages.pop(0)
-        system = PERSONA + "\n\n" + context_block(self.e, text)
+        system = persona(self.e) + "\n\n" + context_block(self.e, text)
         spoken = []
         try:
             for _ in range(6):
@@ -443,6 +450,138 @@ class ApiBrain:
             _log(f"API error: {e}")
             return "I couldn't reach my brain right now."
         reply = _speakable(" ".join(spoken)) or "Done."
+        self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
+        self.history = self.history[-12:]
+        return reply
+
+
+# --------------------------------------------------------------------------- #
+# Mirage's own brain (llama.cpp on this PC)
+# --------------------------------------------------------------------------- #
+THINK_HARD = r"^(?:please |okay |ok )?think (?:hard|carefully|deeply|really hard)(?: about (?:this|it))?[,.:]?\s*(.*)$"
+
+
+class LocalBrain:
+    def __init__(self, engine):
+        import local_brain
+        self.e = engine
+        self.lb = local_brain
+        self.skills = Skills(engine)
+        self.history = []
+        self.llm = local_brain.LocalLLM(log=_log, on_change=lambda: engine.emit("local_brain"))
+
+    def key(self):
+        k = self.e.cfg.get("local_model") or self.lb.DEFAULT_MODEL
+        return k if k in self.lb.MODELS else self.lb.DEFAULT_MODEL
+
+    def available(self):
+        return self.lb.installed(self.key())
+
+    def reset(self):
+        self.history = []
+
+    def reload(self):
+        if self.llm.running() and self.llm.key != self.key():
+            self.llm.stop()
+
+    def stop(self):
+        self.llm.stop()
+
+    def _tools(self):
+        pytype = {str: "string", int: "integer"}
+        out = []
+        for name, desc, schema in TOOL_SPECS:
+            props = {k: {"type": pytype.get(v, "string")} for k, v in schema.items()}
+            required = [k for k in schema if k not in ("label", "service", "day")]
+            out.append({"type": "function", "function": {"name": name, "description": desc, "parameters":
+                        {"type": "object", "properties": props, "required": required}}})
+        out.append({"type": "function", "function": {"name": "look_at_screen", "description":
+                    "See what's on the user's screen right now.", "parameters": {"type": "object", "properties": {}}}})
+        return out
+
+    def _ensure_running(self):
+        if self.llm.running() and self.llm.key == self.key():
+            return True, ""
+        self.e.set_status("thinking", "Waking up my brain…")
+        return self.llm.start(self.key(), float(self.e.cfg.get("brain_idle_minutes", 5)))
+
+    def ask(self, text: str, screen: bool = False) -> str:
+        import json
+        import re
+        think = False
+        if re.match(THINK_HARD, text, re.I):  # the model understands "think hard about…" as it is
+            think = True
+            cc = self.e.brains.get("claude_code")
+            if self.e.cfg.get("think_hard_claude", True) and cc and cc.installed() and cc.logged_in():
+                self.e.set_status("thinking", "Asking Claude…")
+                return cc.ask(text, screen)
+        if not self.available():
+            return "My brain isn't installed yet. Install it in Settings, under Brain."
+        ok, msg = self._ensure_running()
+        if not ok:
+            return msg
+        model = self.lb.MODELS[self.key()]
+        system = persona(self.e) + "\n\n" + context_block(self.e, text)
+        if think and model["think"] == "token":
+            system = "<|think|>" + system
+        content = text
+        if screen:
+            try:
+                content = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + screenshot_jpeg_b64(1280)}},
+                           {"type": "text", "text": text}]
+            except Exception as e:
+                _log(f"Screenshot failed: {e}")
+        messages = [{"role": "system", "content": system}] + self.history[-10:] + [{"role": "user", "content": content}]
+        tools = self._tools()
+        reply = ""
+        try:
+            for attempt in range(7):
+                if think:
+                    self.e.set_status("thinking", "Thinking it through…")
+                try:
+                    msg = self.llm.chat(messages, tools, think)
+                except Exception as e:
+                    if not self.llm.running() and attempt == 0:  # it crashed: start it again once
+                        ok, why = self._ensure_running()
+                        if ok:
+                            continue
+                    raise
+                calls = msg.get("tool_calls") or []
+                if not calls:
+                    reply = msg.get("content") or ""
+                    break
+                messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+                screen_after = None
+                for c in calls:
+                    fn = c.get("function", {})
+                    name = fn.get("name", "")
+                    try:
+                        args = fn.get("arguments") or "{}"
+                        args = json.loads(args) if isinstance(args, str) else args
+                    except Exception:
+                        args = {}
+                    self.e.set_status("thinking", _tool_label(name))
+                    if name == "look_at_screen":
+                        try:
+                            screen_after = screenshot_jpeg_b64(1280)
+                            out = "The screenshot is in the next message."
+                        except Exception as ex:
+                            out = f"Couldn't capture the screen: {ex}"
+                    else:
+                        try:
+                            out = str(self.skills.run(name, args) or "Done.")
+                        except Exception as ex:
+                            out = f"That failed: {ex}"
+                    messages.append({"role": "tool", "tool_call_id": c.get("id") or name, "content": out})
+                if screen_after:
+                    messages.append({"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + screen_after}},
+                        {"type": "text", "text": "This is my screen right now."}]})
+        except Exception as e:
+            _log(f"Local brain error: {e}")
+            return "My brain had a problem answering that. " + str(e)[:120]
+        reply = re.sub(r"<think>.*?</think>", " ", reply, flags=re.S)
+        reply = _speakable(reply) or "Done."
         self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": reply}]
         self.history = self.history[-12:]
         return reply

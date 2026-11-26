@@ -107,6 +107,7 @@ function onEvent(kind, data) {
     case "toast": toast(data); break;
     case "progress": {
       if (data[0] === "speechState" && S.speech) S.speech.detail = data[1];
+      if (data[0] === "localState" && S.local) S.local.detail = data[1];
       const el = $("#" + data[0]); if (el) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
     } break;
     case "refresh_settings": if (page === "settings") renderSettings(); break;
@@ -389,9 +390,16 @@ function saveDict(key, dict) {
 /* ------------------------------------------------------------------ settings */
 const C = () => S.cfg;
 const SECTIONS = [
-  { id: "brain", name: "Brain", intro: "What answers when you ask something a shortcut can't handle. Opening apps, timers, reminders, weather and your notes are handled by Mirage itself and never use Claude.",
+  { id: "brain", name: "Brain", intro: "What answers when you ask something a shortcut can't handle. Opening apps, timers, reminders, weather and your notes are shortcuts, so they never need the brain.",
     rows: () => [
-      seg("brain", "Brain", "", [["claude_code", "Claude Code"], ["api", "API key"], ["off", "Off"]], true),
+      seg("brain", "Brain", "Mirage's own brain runs on this PC: free, private, and it works offline.",
+          [["local", "Mirage"], ["claude_code", "Claude Code"], ["api", "API key"], ["off", "Off"]], true),
+      C().brain === "local" && custom("Mirage's brain", localInstalled() ? "" : "Downloads the engine and an AI model that run on your graphics card.", localCtl),
+      C().brain === "local" && seg("local_model", "Model", "Qwen3.5 9B is smarter. Gemma 4 E4B uses less graphics memory and answers faster.",
+          ((S.local || {}).models || []).map(m => [m[0], m[1]])),
+      C().brain === "local" && localInstalled() && range("brain_idle_minutes", "Free graphics memory after", "When the brain isn't used, it hands graphics memory back for games, and wakes up on the next question.", 1, 30, 1, v => v + " min"),
+      C().brain === "local" && toggle("think_hard_claude", "Use Claude for “think hard”", "Start a question with “think hard” for tough ones. With this on and Claude Code set up, Claude answers those; otherwise Mirage's brain takes longer to think it through."),
+      C().brain !== "off" && custom("Personality", "How Mirage should come across, in your words. For example: calm and a bit cocky, like the Six-eared Macaque.", () => [areaEl("personality", "Calm, witty, a little playful…")]),
       C().brain === "claude_code" && custom("Claude Code", "Uses your Claude account. Install it once, then log in.", claudeCtl),
       C().brain === "claude_code" && seg("claude_model", "Model", "Fast uses the least of your Claude usage and replies quickest.",
         [["haiku", "Fast"], ["sonnet", "Balanced"], ["opus", "Smartest"]]),
@@ -550,6 +558,26 @@ function vsCtl() {
   return [selectEl(voices, C().voicestudio_voice || "", v => setCfg({ voicestudio_voice: v }).then(() => api().test_voice())),
           btn("↻", () => api().refresh_options().then(() => renderSettings()), "small", "Check VoiceStudio again"),
           stateEl("vsState", vs.ok ? "Connected" : "Not reachable", vs.ok ? "ok" : "bad")];
+}
+
+/* Mirage's own brain */
+const localInstalled = () => !!(S.local && S.local.installed);
+const fmtSize = mb => mb >= 1000 ? (mb / 1000).toFixed(1) + " GB" : Math.round(mb) + " MB";
+function localCtl() {
+  const L = S.local || {};
+  if (L.state === "installing") return [stateEl("localState", L.detail || "Installing…", "wait")];
+  if (!L.installed) return [stateEl("localState", L.state === "error" ? L.detail : "Not installed", L.state === "error" ? "bad" : ""),
+    btn("Install (" + fmtSize(L.download_mb || 0) + ")", () => { S.local.state = "installing"; S.local.detail = "Starting…"; renderSettings(); api().install_local_brain(C().local_model); }, "gold")];
+  if (L.state === "error") return [stateEl("localState", L.detail, "bad")];
+  if (L.state === "starting") return [stateEl("localState", L.detail || "Starting…", "wait")];
+  if (L.running) return [stateEl("localState", L.gpu === false ? "Running on the processor" : "Running on your graphics card", "ok")];
+  return [stateEl("localState", "Ready. It wakes up when you ask something.", "ok")];
+}
+function areaEl(key, placeholder) {
+  const t = h("textarea", { placeholder, rows: 3, style: "width:340px" });
+  t.value = C()[key] || "";
+  t.addEventListener("change", () => setCfg({ [key]: t.value.trim() }));
+  return t;
 }
 
 /* Mirage's own voice and ears */
