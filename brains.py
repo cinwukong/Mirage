@@ -134,7 +134,11 @@ class Skills:
         e, a, sk = self.e, self.e.actions, self.e.skills
         _log(f"Brain tool: {name} {args}")
         if name == "remember":
-            e.memory.remember(args["fact"])
+            import re
+            fact = re.sub(r"^(?:the )?user\b", "The user", args["fact"].strip(), flags=re.I)
+            fact = re.sub(r"\b(?:to|with|about) me\b", lambda m: m.group(0).replace("me", "Mirage"), fact)
+            if not e.memory.remember(fact):
+                return "Not saved: Mirage never keeps passwords, codes or card numbers."
             e.emit("memory_changed")
             return "Saved to memory."
         if name == "search_chats":
