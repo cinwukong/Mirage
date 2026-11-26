@@ -1,105 +1,74 @@
 # Mirage
 
-A voice assistant for Windows, in the spirit of JARVIS. Say **"mirage"**, then what you want.
+A voice assistant for Windows that runs on your own PC. Say **"Mirage"**, then what you want.
 
-- **Shortcuts first.** Opening apps and websites, timers, reminders, your to-do list, notes, weather,
-  media keys and Roblox Studio are handled by Mirage itself: instant, offline and free.
-- **Claude Code for everything else.** Questions and bigger tasks go to Claude Code, using your Claude
-  account. It can use Mirage's skills, search the web, read files and (if you allow it) run commands.
-- **Memory in Obsidian.** What you ask Mirage to remember becomes linked notes in your vault, so it
-  shows up as a web in Obsidian's graph.
-- **A hologram in the corner.** The purple headband appears while Mirage listens, thinks and speaks,
-  with optional subtitles.
+- **Shortcuts that need no AI:** open apps and websites, switch and snap windows, timers, reminders, your to-do
+  list, notes, weather, media keys and Spotify. Instant, offline and free.
+- **Its own brain:** an open AI model on your graphics card answers questions, holds a conversation, can look at
+  your screen and use your mouse and keyboard for you. Free and private. Claude works too, if you'd rather.
+- **Its own voice and ears:** a natural voice (Kokoro) and accurate hearing (NVIDIA Parakeet), both on your PC.
+- **It remembers:** what you tell it, and things it notices about you, as notes you can read (and open in
+  Obsidian). Past conversations are searchable.
+- **Talk naturally:** carry on without repeating "Mirage", and talk over it to interrupt.
+- **A hologram in the corner** while it listens, thinks and speaks, with optional subtitles.
 
 ## Install
-1. Install Python 3.9 or newer from python.org (tick "Add python.exe to PATH").
-2. Download this repository and double-click `install.bat`.
-3. In Mirage, open **Settings → Brain** and click **Install Claude Code**, then **Log in**.
+1. Download **`Mirage-Setup-<version>.exe`** from [Releases](https://github.com/cinwukong/Mirage/releases/latest)
+   and run it. Windows 10 or 11, 64-bit.
+2. Windows may say it protected your PC, because the installer isn't signed: click **More info**, then
+   **Run anyway**.
+3. Mirage walks you through the rest: your name, your microphone, its voice and hearing (about 830 MB), and its
+   brain (about 6 GB; an NVIDIA graphics card is recommended).
 
-After that, `start_mirage.bat` opens Mirage, and **Settings → App → Start with Windows** starts it
-hidden in the tray when you log in. Updates install from **Settings → App → Check for updates**.
+Mirage updates itself from **Settings → App → Check for updates**. It installs to
+`%LOCALAPPDATA%\Programs\Mirage` and needs no administrator rights.
 
-## Pages
-- **Home**: the hologram, your conversation, and a box to type to Mirage.
-- **Memory**: things Mirage remembers, your to-do list and reminders. Add, tick off or delete.
-- **Shortcuts**: your own voice commands ("mirage good morning" → open Spotify), plus websites,
-  apps and Roblox games Mirage can open.
-- **Settings**: brain, listening (microphone, wake words, hearing), voice (Mirage, Windows or VoiceStudio),
-  hologram, memory (Obsidian vault), skills (weather city, music) and app options.
+## Where your things are
+- **Settings, chat history, the voice and the brain:** `%LOCALAPPDATA%\Mirage`. They stay when you update.
+  When you uninstall, Mirage asks whether to delete them.
+- **Notes:** `Documents\Mirage`, or an Obsidian vault you pick under **Settings → Memory**.
+- Nothing is sent anywhere unless you choose Claude as the brain, or ask for the weather or a web search.
 
-## Spotify
-Save playlists on the **Shortcuts** page (in Spotify: right-click a playlist → Share → Copy link to playlist).
-Then "mirage play chill" or "mirage switch to gym" opens it in the Spotify app and presses play.
-"mirage stop the music", "play music", "next song" and "what's playing" work too. No Spotify login needed.
+## What you can say
+| | |
+|---|---|
+| Apps and sites | "open YouTube", "open Discord", "search for cheap headphones" |
+| Windows | "switch to Chrome", "snap this left", "put Chrome and Discord side by side", "minimize everything" |
+| Timers and reminders | "set a timer for 10 minutes", "remind me at 5 pm to call mom" |
+| To-dos and memory | "add buy milk to my to-do list", "remember that my favourite colour is purple", "get to know me" |
+| Music | "play lofi beats", "pause", "next song", "play chill" (a Spotify playlist you saved) |
+| Your PC | "open Discord and go to my messages" (the brain uses your mouse and keyboard; Esc stops it) |
+| Questions | anything else goes to the brain |
+| Quiet | "do not disturb for two hours", "you can talk again" |
 
-## Mirage's own brain
-**Settings → Brain → Mirage → Install** downloads [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and an
-open AI model that runs on your graphics card: **Qwen3.5 9B** (smarter, about 7 GB with its vision add-on) or
-**Gemma 4 E4B** (lighter, about 6 GB). Both are Apache-2.0, use Mirage's skills as tools, and can look at your screen.
-- Free and private: nothing leaves your PC, and there are no usage limits.
-- After a few idle minutes it hands graphics memory back (for games) and wakes up on the next question.
-- Start a question with **"think hard"** for tough ones: Claude answers if Claude Code is set up, otherwise the
-  local model takes longer to think it through.
-- Write Mirage's **personality** in your own words under Settings → Brain.
-- Stored in `%LOCALAPPDATA%\Mirage\brain`.
-
-## Mirage's own voice and hearing
-**Settings → Voice → Mirage → Install** downloads Mirage's voice and ears (about 830 MB), which run on this PC
-with no other apps:
-- **Voice:** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), 28 English voices (Bella is the
-  default), with pitch and a robotic "hologram" effect. Lines Mirage says often are saved, so they play instantly.
-- **Hearing:** NVIDIA [Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) (CC-BY-4.0) writes
-  down what you say, and Silero VAD (MIT) tells when you're talking. Parakeet also listens for "mirage".
-- Both run with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0). Models are stored in
-  `%LOCALAPPDATA%\Mirage\speech`.
-
-## Conversations
-- **Keep listening after replies** (Settings → Listening): after Mirage answers something you said, it listens for
-  about 8 seconds (the hologram turns gold), so you can carry on without saying "mirage" again. Say "that's all",
-  "never mind", "okay" or "thanks" to end it.
-- **Interrupt by talking:** talk over Mirage and it stops, then treats what you're saying as the next command.
-  "Stop" or "shut up" just stop it; "hold on" stops it and keeps listening.
-- Mirage notices when it can hear its own voice (speakers instead of a headset). Then only "Mirage, …" cuts it off,
-  so it doesn't interrupt itself. It switches back when you put the headset on.
-
-## Memory
-- **Things it remembers:** say "remember that …", or let it notice: when a conversation goes quiet, Mirage's own
-  brain picks out lasting things about you (what you like, your projects, the people in your life) and saves
-  them, tagged *noticed*. If you correct something ("actually I play drums now"), the old fact is replaced.
-  Passwords, codes and card numbers are never kept, even if you ask.
-- **Get to know me:** say "get to know me" (or press the button on the Memory page) and Mirage asks a few questions.
-- **Past chats:** conversations are kept on this PC (not in your notes), so you can ask "what did we talk about
-  yesterday?" or search them on the Memory page. Turn it off or delete it under **Settings → Memory**.
-- Everything is grouped by who or what it's about on the Memory page, and stays as linked notes in Obsidian.
+Make your own voice commands on the **Shortcuts** page, and turn off built-in ones you don't want.
 
 ## Speaking up on its own
-- Mirage sometimes says something without being asked, but only when it's worth it: a date it remembers is
-  coming up ("Heads up for tomorrow: Emma's birthday"), a task in your notes is due (Obsidian Tasks style
-  `- [ ] essay 📅 2026-12-01`), and once a day in the afternoon your to-do list. At most one every 20 minutes.
-- It waits for a good moment: you're at the PC, Mirage isn't busy, nothing is running full screen, and it's not
-  quiet hours (23:00 to 08:00 by default). While a game fills the screen the hologram stays hidden too.
-- **Quiet mode:** "do not disturb for two hours", "quiet mode until 6 pm", "you can talk again".
-- Your own reminders and timers always come through. Optional break reminders. All under **Settings → Speaking up**.
+Rarely, and only when it's worth it: a date it remembers is coming up, a task in your notes is due, or once a day
+your to-do list. It stays quiet during quiet hours (23:00 to 08:00 by default), when you're away, and while a game
+fills the screen. Your own reminders always come through. See **Settings → Speaking up**.
 
-## Windows and using your PC
-- **Window shortcuts** (no brain needed): "switch to Discord", "snap this left", "put Chrome and Discord side by
-  side", "move this to my other screen", "minimize Spotify", "minimize everything", "maximize", "what's open",
-  "close Spotify", "close this tab".
-- **The brain can use your mouse and keyboard** for things like "open Discord and go to my messages": it reads the
-  buttons, links and text boxes of the window you're using (Windows UI Automation, like a screen reader), or looks
-  at a screenshot with those controls numbered, then clicks, types, presses keys and scrolls. The hologram turns
-  coral while it does.
-- **Safety:** press **Esc** or move the mouse to stop it at once (saying "stop" works too). It never types into
-  password boxes, and it asks you before clicking things like Send, Delete or Buy, or pressing Enter in a chat.
-  Turn it off with **Settings → Brain → Let Mirage use my mouse and keyboard**.
+## Using your mouse and keyboard
+The brain reads the buttons and text boxes of the window you're using (Windows UI Automation, like a screen
+reader) or looks at the screen, then clicks, types and presses keys. Press **Esc** or move the mouse to stop it.
+It never types into password boxes, and it asks before sending, deleting or buying anything. Turn it off under
+**Settings → Brain**.
 
-## Files
-- `mirage_app.py`: starts Mirage (and offers to install missing parts after an update)
-- `ui_web.py` + `web/`: the window and interface
-- `mirage.py`: listening, speaking and the built-in shortcuts
-- `local_brain.py`: Mirage's own brain (llama.cpp)
-- `brains.py`: Claude Code and API-key brains, and the skills they can use
-- `skills.py`: memory, to-dos, reminders, weather, facts, Roblox Studio; `spotify.py`: Spotify control
-- `hologram.py`: the corner hologram; `speech.py`: Mirage's own voice and hearing
-- `config.json`, `memory/`, `reminders.json`, `model/` and `voices/` are kept on your PC and never uploaded.
-  The voice model is stored in `%LOCALAPPDATA%\Mirage\voice_model`, outside the Mirage folder.
+## Building it yourself
+The installer is built by GitHub Actions (`.github/workflows/build.yml` runs `installer/build.ps1` on Windows):
+a private copy of Python 3.13 with every package, Mirage's code in `app\`, a small `Mirage.exe` launcher
+(`installer/launcher.c`) so Windows shows Mirage rather than Python, and an Inno Setup installer
+(`installer/mirage.iss`). To run from source instead: install Python 3.11+, `pip install -r requirements.txt`,
+then `pythonw mirage_app.py`.
+
+## Credits
+Mirage stands on these, each under its own license:
+- Voice: [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0)
+- Hearing: NVIDIA [Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) (CC-BY-4.0),
+  [Silero VAD](https://github.com/snakers4/silero-vad) (MIT), [Vosk](https://alphacephei.com/vosk/) (Apache-2.0)
+- Running them: [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0),
+  [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT)
+- Brains: [Qwen 3.5](https://huggingface.co/Qwen) (Apache-2.0), [Gemma 4](https://ai.google.dev/gemma/terms)
+  (Gemma Terms of Use), or [Claude](https://claude.ai)
+- The app: [Python](https://www.python.org) (PSF), [pywebview](https://pywebview.flowrl.com) (BSD),
+  [Inno Setup](https://jrsoftware.org/isinfo.php)

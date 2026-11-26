@@ -236,11 +236,11 @@ def fact_subject(fact: str, known=None):
     subj = m.group(1).strip(" ,")
     if subj.endswith("'s") or subj.endswith("’s"):
         subj = subj[:-2]
-    # an existing note mentioned in the subject wins ("the conductor of bullet train" -> Bullet Train)
+    # an existing note mentioned in the subject wins ("the villain of skyline" -> Skyline)
     for low in sorted(known or {}, key=len, reverse=True):
         if re.search(r"(?<!\w)" + re.escape(low) + r"(?!\w)", subj):
             return known[low]
-    # "the boss of limbless" -> "limbless"
+    # "the boss of my game" -> "my game"
     m2 = re.search(r"\b(?:of|in|on|from|for|at)\s+(?:the\s+)?(.+)$", subj)
     if m2:
         subj = m2.group(1)
@@ -263,7 +263,8 @@ class Memory:
         p = (self.get_cfg().get("vault_path") or "").strip()
         if p and Path(p).exists():
             return vault_root(p)
-        return BASE_DIR / "memory"
+        import paths
+        return paths.NOTES  # Documents\Mirage
 
     @property
     def folder(self) -> Path:
@@ -346,7 +347,7 @@ class Memory:
 
     # ---- remember / recall ----
     def remember(self, fact: str, topic: str = None, noticed: bool = False):
-        """Save a fact. topic: who/what it's about ("Me", "Bullet Train", "Emma"); worked out when not given.
+        """Save a fact. topic: who/what it's about ("Me", "Skyline", "Emma"); worked out when not given.
         noticed: Mirage picked it up from a conversation (tagged #noticed) rather than being told to remember it."""
         fact = re.sub(r"\s+", " ", redact(fact)).strip().rstrip(".")
         if not fact or SECRET_FACT.search(fact):
@@ -735,7 +736,8 @@ def clean_md(line: str) -> str:
 # --------------------------------------------------------------------------- #
 class Reminders:
     def __init__(self, on_due):
-        self.path = BASE_DIR / "reminders.json"
+        import paths
+        self.path = paths.DATA / "reminders.json"
         self.on_due = on_due
         self.lock = threading.Lock()
         self.items = self._load()
@@ -905,7 +907,7 @@ def open_roblox_game(cfg: dict, name: str) -> str:
     games = {k.lower(): v for k, v in cfg.get("roblox_games", {}).items()}
     key = name.lower().strip()
     target = games.get(key)
-    if target is None:  # loose match: "open bullet train" -> "bullet train game"
+    if target is None:  # loose match: "open skyline" -> "skyline game"
         target = next((v for k, v in games.items() if key in k or k in key), None)
     if target is None:
         return ""

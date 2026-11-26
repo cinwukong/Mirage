@@ -65,7 +65,6 @@ DEFAULT_VOICE = "af_bella"
 # Words Kokoro's own list doesn't have, in its sound symbols
 EXTRA_WORDS = """spotify s p ˈ ɑ t ɪ f ˌ I
 roblox ɹ ˈ O b l ɑ k s
-wukong w ˈ u k ˌ ɔ ŋ
 github ɡ ˈ ɪ t h ˌ ʌ b
 playtest p l ˈ A t ˌ ɛ s t
 playtesting p l ˈ A t ˌ ɛ s t ɪ ŋ
@@ -82,11 +81,9 @@ o'clock ə k l ˈ ɑ k
 WAKE_SOUNDS = ["mirage", "mirages", "mirage's", "mirrage", "miraj", "mirag"]
 
 
-def _python():
-    p = Path(sys.executable)
-    if p.name.lower() == "pythonw.exe":
-        p = p.with_name("python.exe")
-    return str(p)
+def _pip(*args):
+    import paths
+    return paths.pip(*args)
 
 
 def part_ready(part) -> bool:
@@ -139,7 +136,7 @@ def install(progress=lambda m: None, log=lambda m: None):
         return False, f"Not enough free disk space: this needs about 2 GB and there's {free / 1e9:.1f} GB free."
     if not package_ready():
         progress("Installing the speech engine…")
-        r = subprocess.run([_python(), "-m", "pip", "install", "--disable-pip-version-check", "sherpa-onnx", "numpy"],
+        r = subprocess.run(_pip("install", "--disable-pip-version-check", "sherpa-onnx", "numpy"),
                            capture_output=True, text=True, creationflags=NO_WINDOW)
         if r.returncode != 0:
             err = next((l for l in reversed(r.stdout.splitlines() + r.stderr.splitlines()) if "ERROR" in l), "pip failed")
@@ -190,6 +187,14 @@ def remove_old_engines(log=lambda m: None):
     marker = HOME / ".old-engines-removed"
     if marker.exists():
         return
+    old = [HOME / "voice_model", HOME / "voice_cache", BASE_DIR / "voice_model", BASE_DIR / "voice_cache", BASE_DIR / "voices"]
+    if not any(d.exists() for d in old):  # never had the old engine: nothing to clean (and other apps' files stay)
+        try:
+            HOME.mkdir(parents=True, exist_ok=True)
+            marker.write_text("nothing to remove")
+        except Exception:
+            pass
+        return
     freed = 0
     for d in (HOME / "voice_model", HOME / "voice_cache", BASE_DIR / "voice_model", BASE_DIR / "voice_cache", BASE_DIR / "voices"):
         if d.exists():
@@ -200,8 +205,8 @@ def remove_old_engines(log=lambda m: None):
     for d in hub.glob("models--Systran--faster-whisper-*") if hub.exists() else []:
         shutil.rmtree(d, ignore_errors=True)
     # packages only Mirage's old voice and Whisper used
-    r = subprocess.run([_python(), "-m", "pip", "uninstall", "-y", "omnivoice", "torch", "transformers", "accelerate",
-                        "faster-whisper", "ctranslate2"], capture_output=True, text=True, creationflags=NO_WINDOW)
+    r = subprocess.run(_pip("uninstall", "-y", "omnivoice", "torch", "transformers", "accelerate",
+                        "faster-whisper", "ctranslate2"), capture_output=True, text=True, creationflags=NO_WINDOW)
     log(f"Removed the old voice engine and Whisper ({freed / 1e9:.1f} GB of models; pip: "
         f"{'ok' if r.returncode == 0 else r.stderr.strip()[-200:]})")
     HOME.mkdir(parents=True, exist_ok=True)

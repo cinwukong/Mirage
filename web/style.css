@@ -296,3 +296,29 @@ textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(217, 169,
 .list li.chat .t { display: flex; flex-direction: column; gap: 3px; }
 .list li.chat .you { color: var(--mist); }
 .list li.chat .said { color: var(--muted); font-size: 13.5px; }
+
+/* first-run setup */
+.setup { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px;
+  background: radial-gradient(ellipse at 50% 30%, rgba(139, 92, 246, .22), transparent 60%), rgba(12, 6, 20, .94); }
+.setup[hidden] { display: none; }
+.setup-card { width: min(600px, 100%); background: var(--plum); border: 1px solid var(--gold-line); border-radius: 18px;
+  padding: 30px 34px 26px; box-shadow: 0 30px 80px rgba(0, 0, 0, .45); }
+.setup-card h1 { font-family: var(--display); font-weight: 500; font-size: 30px; margin: 4px 0 10px; color: var(--mist); }
+.setup-card p { color: #cfc3e6; line-height: 1.55; margin: 0 0 14px; max-width: 62ch; }
+.setup-card p.small { font-size: 13px; color: var(--muted); }
+.setup-card label { display: block; margin: 18px 0 6px; color: var(--mist); font-weight: 600; }
+.setup-card input[type=text] { width: 100%; }
+.setup-logo { width: 92px; display: block; margin: 0 0 6px -6px; filter: drop-shadow(0 0 18px rgba(183, 148, 255, .45)); }
+.setup .dots { list-style: none; display: flex; gap: 6px; padding: 0; margin: 0 0 18px; }
+.setup .dots li { width: 22px; height: 4px; border-radius: 2px; background: var(--plum-3); }
+.setup .dots li.done { background: var(--gold); }
+.setup .dots li.on { background: var(--gold-hi); width: 34px; }
+.setup-row { display: flex; align-items: center; gap: 14px; margin: 14px 0; justify-content: space-between; }
+.setup-row select { min-width: 300px; }
+.setup .meter.wide { width: 100%; margin: 6px 0 16px; }
+.setup-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; gap: 10px; }
+.setup .choice { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; margin: 10px 0;
+  border: 1px solid rgba(183, 148, 255, .2); border-radius: 12px; background: rgba(39, 22, 58, .5); }
+.setup .choice.on { border-color: var(--gold-line); }
+.setup .choice b { display: block; color: var(--mist); margin-bottom: 3px; }
+.setup .choice small { color: var(--muted); line-height: 1.45; display: block; max-width: 40ch; }

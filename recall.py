@@ -187,8 +187,8 @@ Rules:
 - Write dates as real dates ("on 3 December 2026"), not "tomorrow" or "next week": today is {today}.
   Birthdays don't need a year.
 - Write each fact as one short sentence about "the user", for example "The user's favourite colour is
-  purple" or "Emma is the user's sister". Facts about something else name it: "Bullet Train is a Roblox
-  murder-mystery game the user is making".
+  purple" or "Emma is the user's sister". Facts about something else name it: "Skyline is a city-building
+  game the user is making".
 - topic: "Me" for facts about the user themselves, otherwise the person, pet, game or project the fact is
   about, in a few words.
 - If there's nothing new about the user, return an empty list.

@@ -16,3 +16,6 @@ voice_cache/
 speech/
 voice_lines/
 chats.db
+build/
+installer/out/
+ci/

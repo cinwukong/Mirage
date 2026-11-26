@@ -1,0 +1,63 @@
+name: Build the Windows installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build Mirage and its installer
+        shell: pwsh
+        run: ./installer/build.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mirage-Setup
+          path: installer/out/*.exe
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Mirage ${{ github.ref_name }}
+          files: installer/out/*.exe
+          body: |
+            **Download `Mirage-Setup-*.exe` below and run it.** Windows 10 or 11, 64-bit.
+
+            Windows may say it protected your PC, because the installer isn't signed: click **More info**, then **Run anyway**.
+            After installing, Mirage walks you through your microphone, its voice (about 830 MB) and its brain.
+
+      # Keeps the build log on the ci-logs branch, so it can be read without signing in to GitHub
+      - name: Save the build log
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci | Out-Null
+          foreach ($f in @("build/build.log", "build/selftest.txt")) { if (Test-Path $f) { Copy-Item $f ci/ } }
+          "${{ job.status }} run ${{ github.run_number }} ${{ github.ref_name }} ${{ github.sha }} $(Get-Date -Format o)" | Set-Content ci/status.txt
+          Set-Location ci
+          git init -q
+          git config user.name "mirage-ci"
+          git config user.email "mirage-ci@users.noreply.github.com"
+          git checkout -q -b ci-logs
+          git add -A
+          git commit -q -m "Build log, run ${{ github.run_number }}"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ci-logs

@@ -35,6 +35,7 @@ async function boot() {
   setMuted(S.muted);
   renderConvo();
   show(S.start_page || "home");
+  if (C().setup_done === false) openSetup();
   poll();
   requestAnimationFrame(drawHolo);
 }
@@ -98,18 +99,19 @@ async function setCfg(changes, rerender = false) {
 function onEvent(kind, data) {
   switch (kind) {
     case "status": applyStatus(data[0], data[1]); break;
-    case "level": level = data; { const m = $("#levelMeter"); if (m) m.style.width = Math.min(100, data * 400) + "%"; } break;
+    case "level": level = data; for (const m of $$("#levelMeter, #setupMeter")) m.style.width = Math.min(100, data * 400) + "%"; break;
     case "heard": addLine("you", data); break;
     case "reply": addLine("mirage", data); break;
     case "system": addLine("sys", data); break;
     case "muted": setMuted(data); break;
     case "show_page": show(data); break;
-    case "state": Object.assign(S, data); if (page === "settings") renderSettings(); break;
+    case "state": Object.assign(S, data); if (page === "settings") renderSettings(); if (setupStep >= 0) renderSetup(); break;
     case "memory_changed": case "reminders_changed": if (page === "memory") renderMemory(); break;
     case "toast": toast(data); break;
     case "progress": {
       if (data[0] === "speechState" && S.speech) S.speech.detail = data[1];
       if (data[0] === "localState" && S.local) S.local.detail = data[1];
+      for (const el of $$("#setup [data-progress='" + data[0] + "']")) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
       const el = $("#" + data[0]); if (el) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
     } break;
     case "refresh_settings": if (page === "settings") renderSettings(); break;
@@ -357,7 +359,7 @@ function renderShortcuts() {
 
   // custom voice commands
   box.append(h("h2", { class: "sec" }, "Your voice commands"),
-    h("p", { class: "lede" }, "Make your own: “mirage good morning” could open Spotify, or “mirage studio” could open Roblox Studio."));
+    h("p", { class: "lede" }, "Make your own: “mirage good morning” could open Spotify, or “mirage work” could open your notes."));
   const vc = cfg.voice_commands || [];
   const t1 = h("table", { class: "table" });
   vc.forEach((c, idx) => t1.append(h("tr", {},
@@ -382,9 +384,9 @@ function renderShortcuts() {
   const lists = [
     ["websites", "Websites", "“mirage open <name>” opens the site.", "Name", "https://…"],
     ["apps", "Apps", "A program name, the full path to an .exe, or a link like discord:", "Name", "C:\\path\\to\\app.exe"],
-    ["roblox_games", "Roblox games", "The path to a .rbxl file opens it in Studio; a place ID opens its Roblox page.", "Name", "C:\\path\\to\\game.rbxl"],
+    !(cfg.builtins_off || []).includes("roblox") && ["roblox_games", "Roblox games", "The path to a .rbxl file opens it in Studio; a place ID opens its Roblox page.", "Name", "C:\\path\\to\\game.rbxl"],
     ["spotify_playlists", "Spotify playlists", "“mirage play <name>” or “mirage switch to <name>” opens it in Spotify and starts it. In Spotify, right-click a playlist, then Share, Copy link to playlist.", "Name, e.g. chill", "https://open.spotify.com/playlist/…"],
-  ];
+  ].filter(Boolean);
   for (const [key, title, lede, p1, p2] of lists) {
     const dict = key === "apps" ? ((cfg.apps || {})[S.system] || {}) : (cfg[key] || {});
     const tbl = h("table", { class: "table" });
@@ -432,11 +434,11 @@ const SECTIONS = [
       seg("brain", "Brain", "Mirage's own brain runs on this PC: free, private, and it works offline.",
           [["local", "Mirage"], ["claude_code", "Claude Code"], ["api", "API key"], ["off", "Off"]], true),
       C().brain === "local" && custom("Mirage's brain", localInstalled() ? "" : "Downloads the engine and an AI model that run on your graphics card.", localCtl),
-      C().brain === "local" && seg("local_model", "Model", "Qwen3.5 9B is smarter. Gemma 4 E4B uses less graphics memory and answers faster.",
+      C().brain === "local" && seg("local_model", "Model", "Qwen3.5 9B is smarter. Gemma 4 E4B uses less graphics memory and answers faster (Google's Gemma Terms of Use apply).",
           ((S.local || {}).models || []).map(m => [m[0], m[1]])),
       C().brain === "local" && localInstalled() && range("brain_idle_minutes", "Free graphics memory after", "When the brain isn't used, it hands graphics memory back for games, and wakes up on the next question.", 1, 30, 1, v => v + " min"),
       C().brain === "local" && toggle("think_hard_claude", "Use Claude for “think hard”", "Start a question with “think hard” for tough ones. With this on and Claude Code set up, Claude answers those; otherwise Mirage's brain takes longer to think it through."),
-      C().brain !== "off" && custom("Personality", "How Mirage should come across, in your words. For example: calm and a bit cocky, like the Six-eared Macaque.", () => [areaEl("personality", "Calm, witty, a little playful…")]),
+      C().brain !== "off" && custom("Personality", "How Mirage should come across, in your words. For example: calm and dry, like a butler who's seen it all.", () => [areaEl("personality", "Calm, witty, a little playful…")]),
       C().brain !== "off" && row("Let Mirage use my mouse and keyboard", "So it can do things like “open Discord and go to my messages”. Press Esc or move the mouse to stop it. It never types passwords, and asks before sending, deleting or buying anything.",
           toggleEl(C().pc_control !== false, v => setCfg({ pc_control: v }))),
       C().brain === "claude_code" && custom("Claude Code", "Uses your Claude account. Install it once, then log in.", claudeCtl),
@@ -493,8 +495,8 @@ const SECTIONS = [
     rows: () => [
       seg("reply_mode", "Replies", "Subtitles appear under the hologram in the corner of your screen.",
           [["both", "Voice and subtitles"], ["subtitles", "Subtitles only"], ["voice", "Voice only"]]),
-      seg("voice_engine", "Voice engine", "Mirage's own voice runs on this PC. VoiceStudio has to be open to use it.",
-          [["mirage", "Mirage"], ["windows", "Windows"], ["voicestudio", "VoiceStudio"]], true),
+      seg("voice_engine", "Voice engine", "Mirage's own voice runs on this PC." + (C().voice_engine === "voicestudio" ? " VoiceStudio has to be open to use it." : ""),
+          [["mirage", "Mirage"], ["windows", "Windows"], ...(C().voice_engine === "voicestudio" ? [["voicestudio", "VoiceStudio"]] : [])], true),
       C().voice_engine === "windows" && custom("Windows voice", "", () => [selectEl(S.options.voices, C().voice_id || "", v => setCfg({ voice_id: v }).then(() => api().test_voice()), [["", "System default"]])]),
       C().voice_engine === "voicestudio" && custom("VoiceStudio voice", "Voices you design or clone in VoiceStudio appear here.", vsCtl),
       C().voice_engine === "mirage" && custom("Mirage's voice", spInstalled() ? "" : "Installs Mirage's voice and hearing together, about " + ((S.speech || {}).size_mb || 830) + " MB.", () => speechCtl("voice")),
@@ -542,8 +544,11 @@ const SECTIONS = [
         () => S.update_available ? api().install_update() : api().check_updates(), "gold", null, "updBtn")]),
       custom("Start with Windows", "Mirage starts hidden in the tray when you log in.", () => [toggleEl(S.startup, v => api().set_startup(v).then(r => { S.startup = r; saved(); }))]),
       toggle("close_to_tray", "Keep running when closed", "Closing the window keeps Mirage listening in the tray."),
-      text("github_token", "GitHub key", "Only needed if the Mirage repository is private.", "github_pat_…", true),
-      custom("Files", "", () => [btn("Open log", () => api().open_path("log")), btn("Open Mirage folder", () => api().open_path("folder"))]),
+      C().github_token && text("github_token", "GitHub key", "Only needed if the Mirage repository is private.", "github_pat_…", true),
+      custom("Files", "Your settings, log and downloads.", () => [btn("Open log", () => api().open_path("log")), btn("Open data folder", () => api().open_path("folder"))]),
+      custom("First-time setup", "Name, microphone, voice and brain, step by step.", () => [btn("Run it again", openSetup)]),
+      custom("About", "Mirage " + S.version + ". Built on: Kokoro voice (Apache-2.0), NVIDIA Parakeet hearing (CC-BY-4.0), Silero VAD (MIT), sherpa-onnx (Apache-2.0), llama.cpp (MIT), Qwen 3.5 (Apache-2.0), Gemma 4 (Gemma Terms of Use), Vosk (Apache-2.0) and Python (PSF).",
+          () => [btn("Licenses", () => api().open_url("https://github.com/cinwukong/Mirage#credits"))]),
       custom("Quit Mirage", "Stops listening completely.", () => [btn("Quit", () => api().quit(), "danger")]),
     ] },
 ];
@@ -563,7 +568,7 @@ function renderSettings() {
   if (sec.id === "voice" && C().voice_engine === "mirage" && S.speech && S.speech.last_error)
     p.append(h("div", { class: "note" }, "Last voice problem: " + S.speech.last_error));
   if (sec.id === "brain" && C().brain === "claude_code")
-    p.append(h("div", { class: "note" }, "Shortcuts stay free: anything Mirage can do by itself (apps, websites, timers, reminders, to-dos, notes, weather, media keys, Roblox Studio) never reaches Claude. Add your own under Shortcuts."));
+    p.append(h("div", { class: "note" }, "Shortcuts stay free: anything Mirage can do by itself (apps, websites, timers, reminders, to-dos, notes, weather, media keys) never reaches Claude. Add your own under Shortcuts."));
   p.scrollTop = scroll;
 }
 
@@ -676,4 +681,76 @@ function speechCtl(where) {
   if (m.state === "ready") return [stateEl("speechState", where === "ears" ? "Ready" : "Ready", "ok")];
   if (m.state === "error") return [stateEl("speechState", m.detail, "bad"), btn("Try again", () => api().speech_reload())];
   return [stateEl("speechState", "Loading…", "wait")];
+}
+
+/* ------------------------------------------------------------------ first-run setup */
+let setupStep = -1;
+const SETUP_STEPS = ["hello", "mic", "voice", "brain", "done"];
+function openSetup() { setupStep = 0; $("#setup").hidden = false; renderSetup(); }
+function closeSetup() {
+  setupStep = -1; $("#setup").hidden = true;
+  setCfg({ setup_done: true }).then(() => { show("home"); });
+}
+function setupGo(d) { setupStep = Math.max(0, Math.min(SETUP_STEPS.length - 1, setupStep + d)); renderSetup(); }
+function renderSetup() {
+  const box = $("#setup");
+  if (setupStep < 0) return;
+  const step = SETUP_STEPS[setupStep];
+  const dots = h("ol", { class: "dots", "aria-label": "Step " + (setupStep + 1) + " of " + SETUP_STEPS.length },
+    SETUP_STEPS.map((_, i) => h("li", { class: i === setupStep ? "on" : i < setupStep ? "done" : "" })));
+  const back = setupStep > 0 && step !== "done" ? btn("Back", () => setupGo(-1)) : h("span");
+  let body;
+  if (step === "hello") {
+    const name = h("input", { type: "text", id: "setupName", placeholder: "Your name", autocomplete: "off", maxlength: "40" });
+    const next = () => { api().setup_name(name.value).then(() => setupGo(1)); };
+    name.addEventListener("keydown", e => { if (e.key === "Enter") next(); });
+    body = [h("img", { class: "setup-logo", src: "logo.png", alt: "" }),
+      h("h1", { id: "setupTitle" }, "Hello. I'm Mirage."),
+      h("p", {}, "Say my name, then what you want: open apps, set timers and reminders, answer questions, keep notes, even use your mouse and keyboard. I run on this PC."),
+      h("label", { for: "setupName" }, "What should I call you?"), name,
+      h("div", { class: "setup-actions" }, h("span"), btn("Next", next, "gold"))];
+    setTimeout(() => name.focus(), 50);
+  } else if (step === "mic") {
+    body = [h("h1", { id: "setupTitle" }, "Let me hear you"),
+      h("p", {}, "Pick your microphone and say something. The bar should move. A headset works best."),
+      h("div", { class: "setup-row" }, selectEl((S.options.mics || []).map(m => [m, m]), C().input_device || "", v => setCfg({ input_device: v || null }), [["", "System default"]])),
+      h("div", { class: "meter wide" }, h("i", { id: "setupMeter" })),
+      h("p", { class: "muted small" }, "My name is the wake word: “Mirage, what time is it?” You can add others later in Settings."),
+      h("div", { class: "setup-actions" }, back, btn("Next", () => setupGo(1), "gold"))];
+  } else if (step === "voice") {
+    const m = S.speech || {};
+    const ctl = m.installed ? h("span", { class: "state ok" }, m.state === "ready" ? "Installed and ready" : "Installed")
+      : m.state === "installing" ? h("span", { class: "state wait", "data-progress": "speechState" }, m.detail || "Installing…")
+      : h("span", {}, btn("Install (about " + (m.size_mb || 830) + " MB)", () => { S.speech.state = "installing"; S.speech.detail = "Starting…"; renderSetup(); api().install_speech(); }, "gold"),
+          m.state === "error" ? h("span", { class: "state bad" }, " " + m.detail) : null);
+    body = [h("h1", { id: "setupTitle" }, "My voice and hearing"),
+      h("p", {}, "My own voice and ears run on this PC, so nothing you say leaves it. Without them I use the Windows voice and a basic recognizer that mishears more."),
+      h("div", { class: "setup-row" }, ctl),
+      h("p", { class: "muted small" }, m.state === "installing" ? "It keeps downloading if you go on." : "Kokoro voice and NVIDIA Parakeet hearing."),
+      h("div", { class: "setup-actions" }, back, btn(m.installed || m.state === "installing" ? "Next" : "Skip for now", () => setupGo(1), m.installed || m.state === "installing" ? "gold" : ""))];
+  } else if (step === "brain") {
+    const L = S.local || {};
+    const own = L.installed ? h("span", { class: "state ok" }, "Installed")
+      : L.state === "installing" ? h("span", { class: "state wait", "data-progress": "localState" }, L.detail || "Installing…")
+      : btn("Install (" + fmtSize(L.download_mb || 0) + ")", () => { setCfg({ brain: "local" }); S.local.state = "installing"; S.local.detail = "Starting…"; renderSetup(); api().install_local_brain(C().local_model); }, "gold");
+    body = [h("h1", { id: "setupTitle" }, "My brain"),
+      h("p", {}, "Shortcuts like timers, apps and reminders work without one. For questions, conversation and using your PC, pick a brain:"),
+      h("div", { class: "choice" + (C().brain === "local" ? " on" : "") },
+        h("div", {}, h("b", {}, "Mirage's own brain"), h("small", {}, "Free and private, runs on your graphics card." +
+          (L.installed ? "" : L.nvidia ? " Your NVIDIA card can run it." : " I couldn't find an NVIDIA graphics card, so it would run slowly on the processor."))),
+        own),
+      h("div", { class: "choice" + (C().brain === "claude_code" || C().brain === "api" ? " on" : "") },
+        h("div", {}, h("b", {}, "Claude"), h("small", {}, "Smarter, uses your Claude account or an API key. Set it up later in Settings, Brain.")),
+        btn("Use Claude", () => setCfg({ brain: "claude_code" }, false).then(() => setupGo(1)))),
+      h("div", { class: "setup-actions" }, back, btn(L.installed || L.state === "installing" ? "Next" : "Decide later", () => setupGo(1), L.installed || L.state === "installing" ? "gold" : ""))];
+  } else {
+    const start = toggleEl(!!S.startup, v => api().set_startup(v).then(r => { S.startup = r; }));
+    body = [h("h1", { id: "setupTitle" }, "All set"),
+      h("p", {}, "Try it: “Mirage, what time is it?” Then talk to me without saying my name again until I go quiet."),
+      h("p", {}, "Say “Mirage, get to know me” and I'll ask a few questions, so I can help you better."),
+      h("div", { class: "setup-row" }, h("span", {}, "Start Mirage when I log in to Windows"), start),
+      h("div", { class: "setup-actions" }, back, btn("Start using Mirage", closeSetup, "gold"))];
+  }
+  box.textContent = "";
+  box.append(h("div", { class: "setup-card" }, dots, ...body));
 }

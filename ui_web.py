@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import mirage as M
+import paths
 
 WEB = M.BASE_DIR / "web"
 ASSETS = M.BASE_DIR / "assets"
@@ -25,18 +26,8 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 # --------------------------------------------------------------------------- #
 # Start with Windows
 # --------------------------------------------------------------------------- #
-def pythonw():
-    exe = Path(sys.executable)
-    if exe.name.lower() == "python.exe" and exe.with_name("pythonw.exe").exists():
-        return exe.with_name("pythonw.exe")
-    return exe
-
-
-def python_console():
-    exe = Path(sys.executable)
-    if exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").exists():
-        return exe.with_name("python.exe")
-    return exe
+def startup_command() -> str:
+    return " ".join(f'"{a}"' if " " in a or "\\" in a else a for a in paths.launch_args("--tray"))
 
 
 def get_startup() -> bool:
@@ -57,7 +48,7 @@ def set_startup(enabled: bool) -> bool:
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
         if enabled:
-            winreg.SetValueEx(k, "Mirage", 0, winreg.REG_SZ, f'"{pythonw()}" "{LAUNCHER}" --tray')
+            winreg.SetValueEx(k, "Mirage", 0, winreg.REG_SZ, startup_command())
         else:
             try:
                 winreg.DeleteValue(k, "Mirage")
@@ -81,7 +72,7 @@ def open_path(path: Path):
 # --------------------------------------------------------------------------- #
 def fresh_page_after_update():
     """The window keeps a cached copy of the page between runs. After an update, throw it away so the new page loads."""
-    store = M.BASE_DIR / ".webview"
+    store = M.DATA_DIR / ".webview"
     marker = store / "page-version.txt"
     try:
         if marker.exists() and marker.read_text().strip() == M.VERSION:
@@ -352,9 +343,8 @@ class Bridge:
 
         def work():
             a.push("progress", ["claudeState", "Installing Claude Code (about 180 MB)…", "wait"])
-            flags = 0x08000000 if M.SYSTEM == "Windows" else 0
-            r = subprocess.run([str(python_console()), "-m", "pip", "install", "--disable-pip-version-check",
-                                "claude-agent-sdk"], capture_output=True, text=True, creationflags=flags)
+            r = subprocess.run(paths.pip("install", "--disable-pip-version-check", "claude-agent-sdk"),
+                               capture_output=True, text=True, creationflags=paths.NO_WINDOW)
             if r.returncode != 0:
                 lines = [l for l in (r.stderr or r.stdout).splitlines() if l.strip()]
                 a.push("progress", ["claudeState", "Install failed: " + (lines[-1] if lines else "unknown error")[:200], "bad"])
@@ -415,8 +405,21 @@ class Bridge:
                 a.push("progress", ["updState", f"Update failed: {e}", "bad"])
         threading.Thread(target=work, daemon=True).start()
 
+    def setup_name(self, name):
+        """First-run setup: what to call you."""
+        name = str(name or "").strip()[:40]
+        if name:
+            self._app.engine.memory.remember(f"The user wants to be called {name}", topic="Me")
+        return True
+
+    def open_url(self, url):
+        import webbrowser
+        url = str(url)
+        if url.startswith("https://"):
+            webbrowser.open(url)
+
     def open_path(self, which):
-        open_path(M.LOG_PATH if which == "log" else M.BASE_DIR)
+        open_path(M.LOG_PATH if which == "log" else M.DATA_DIR)
 
     def quit(self):
         threading.Thread(target=self._app.quit, daemon=True).start()
@@ -460,9 +463,15 @@ class App:
         key = lb.key()
         return {"state": lb.llm.state, "detail": lb.llm.detail, "model": key, "engine": lb.lb.engine_ready(),
                 "installed": lb.lb.installed(key), "download_mb": lb.lb.download_mb(key), "running": lb.llm.running(),
-                "gpu": lb.llm.uses_gpu() if lb.lb.engine_ready() else None,
+                "gpu": lb.llm.uses_gpu() if lb.lb.engine_ready() else None, "nvidia": self.nvidia(),
                 "models": [[k, m["name"], m["blurb"], lb.lb.model_ready(k), round((m["size"] + m["mmproj_size"]) / 1e9, 1)]
                            for k, m in lb.lb.MODELS.items()]}
+
+    def nvidia(self):
+        try:
+            return bool(self.engine.brains["local"].lb._driver_cuda())
+        except Exception:
+            return False
 
     def claude_state(self):
         import brains
@@ -472,7 +481,7 @@ class App:
     def refresh_options(self):
         e = self.engine
         e.voice.ready.wait(3)
-        vaults = [("", "Mirage's own folder")]
+        vaults = [("", "Documents › Mirage")]
         for name, path in e.skills.find_obsidian_vaults():
             vaults.append((path, f"{name} (Obsidian)"))
         cur = e.cfg.get("vault_path") or ""
@@ -613,9 +622,7 @@ class App:
             self.tray = None
 
     def restart(self):
-        args = [str(pythonw()), str(LAUNCHER), "--restarted"]
-        if getattr(self, "_hidden", self.start_hidden):
-            args.append("--tray")
+        args = paths.launch_args("--restarted", *(["--tray"] if getattr(self, "_hidden", self.start_hidden) else []))
         flags = 0x00000008 | 0x00000200 if M.SYSTEM == "Windows" else 0
         subprocess.Popen(args, cwd=str(M.BASE_DIR), creationflags=flags, close_fds=True)
         self.quit()
@@ -636,7 +643,7 @@ class App:
         if M.SYSTEM == "Windows":
             try:
                 import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("cinwukong.mirage")
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Mirage.Assistant")
             except Exception:
                 pass
         self.refresh_options()
@@ -652,7 +659,7 @@ class App:
         if self.engine.cfg.get("check_updates_on_start", True) and M.update_repo(self.engine.cfg):
             threading.Timer(6, self.bridge.check_updates).start()
         webview.start(http_server=True, debug=False, private_mode=False,
-                      storage_path=str(M.BASE_DIR / ".webview"), icon=str(ICON))
+                      storage_path=str(M.DATA_DIR / ".webview"), icon=str(ICON))
 
 
 def main():

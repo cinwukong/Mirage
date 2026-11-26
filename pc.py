@@ -599,11 +599,9 @@ def _need_comtypes():
         pass
     import importlib
     import subprocess
-    py = sys.executable
-    if py.lower().endswith("pythonw.exe"):
-        py = py[:-len("pythonw.exe")] + "python.exe"
-    subprocess.run([py, "-m", "pip", "install", "--disable-pip-version-check", "comtypes"], capture_output=True,
-                   creationflags=0x08000000)
+    import paths
+    subprocess.run(paths.pip("install", "--disable-pip-version-check", "comtypes"), capture_output=True,
+                   creationflags=paths.NO_WINDOW)
     importlib.invalidate_caches()
     try:
         import site

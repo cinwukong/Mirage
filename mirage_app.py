@@ -1,9 +1,11 @@
 """
 Mirage launcher.
 
+    Mirage.exe                       the installed app (it runs this file with its own Python)
     pythonw mirage_app.py            open Mirage
     pythonw mirage_app.py --tray     start hidden in the tray
     python  mirage_app.py --enable-startup
+    python  mirage_app.py --selftest check that every part loads (writes selftest.txt)
 
 If a part Mirage needs is missing (for example right after an update), a small window offers
 to install it instead of crashing.
@@ -28,11 +30,25 @@ def _log(msg):
         pass
 
 
-def _python_console():
-    exe = Path(sys.executable)
-    if exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").exists():
-        return exe.with_name("python.exe")
-    return exe
+def selftest() -> int:
+    """Import every part of Mirage and check the packages it needs (used when building the installer)."""
+    import importlib
+    import paths
+    out, failed = [], 0
+    for name in ["paths", "mirage", "skills", "speech", "local_brain", "brains", "recall", "presence", "pc", "spotify",
+                 "hologram", "ui_web", "webview", "sounddevice", "numpy", "sherpa_onnx", "PIL", "pystray", "vosk",
+                 "pyttsx3", "anthropic", "tkinter"] + (["comtypes", "comtypes.client"] if sys.platform.startswith("win") else []):
+        try:
+            importlib.import_module(name)
+            out.append(f"ok   {name}")
+        except Exception as e:
+            failed += 1
+            out.append(f"FAIL {name}: {type(e).__name__}: {e}")
+    out.append(f"python {sys.version.split()[0]} at {sys.executable}; bundled={paths.BUNDLED}")
+    report = Path(os.environ.get("MIRAGE_SELFTEST_OUT") or (paths.DATA / "selftest.txt"))
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return 1 if failed else 0
 
 
 def repair(problem: str):
@@ -62,9 +78,9 @@ def repair(problem: str):
 
     def work():
         flags = 0x08000000 if sys.platform.startswith("win") else 0
-        p = subprocess.Popen([str(_python_console()), "-m", "pip", "install", "--disable-pip-version-check",
-                              "-r", str(BASE / "requirements.txt")], stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, creationflags=flags)
+        import paths
+        p = subprocess.Popen(paths.pip("install", "--disable-pip-version-check", "-r", str(BASE / "requirements.txt")),
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=flags)
         last = ""
         for line in p.stdout:
             line = line.strip()
@@ -84,10 +100,8 @@ def repair(problem: str):
         threading.Thread(target=work, daemon=True).start()
 
     def restart():
-        exe = Path(sys.executable)
-        if exe.name.lower() == "python.exe" and exe.with_name("pythonw.exe").exists():
-            exe = exe.with_name("pythonw.exe")
-        subprocess.Popen([str(exe), str(Path(__file__).resolve()), "--restarted"], cwd=str(BASE))
+        import paths
+        subprocess.Popen(paths.launch_args("--restarted"), cwd=str(BASE))
         root.destroy()
 
     btn.config(command=start)
@@ -96,6 +110,8 @@ def repair(problem: str):
 
 
 def main():
+    if "--selftest" in sys.argv:
+        os._exit(selftest())
     try:
         import webview  # noqa: F401
         import ui_web

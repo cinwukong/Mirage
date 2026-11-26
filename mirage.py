@@ -27,11 +27,14 @@ from array import array
 from datetime import datetime
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
-MODEL_DIR = BASE_DIR / "model"
+import paths
+
+BASE_DIR = paths.APP_DIR                # Mirage's code
+DATA_DIR = paths.DATA                   # your settings and downloads (%LOCALAPPDATA%\Mirage)
+CONFIG_PATH = DATA_DIR / "config.json"
+MODEL_DIR = DATA_DIR / "model"
 MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-LOG_PATH = BASE_DIR / "mirage.log"
+LOG_PATH = DATA_DIR / "mirage.log"
 SYSTEM = platform.system()  # "Windows", "Darwin", "Linux"
 SAMPLE_RATE = 16000
 INSTANCE_PORT = 47613
@@ -41,7 +44,8 @@ UPDATE_REPO = "cinwukong/Mirage"
 UPDATE_BRANCH = "main"
 # Files and folders on this PC that an update must never overwrite or delete
 KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
-                  "memory", "reminders.json", ".webview", "voices", "voice_model", "voice_cache", "speech"}
+                  "memory", "reminders.json", ".webview", "voices", "voice_model", "voice_cache", "speech",
+                  ".github", "installer"}  # the last two are for building the installer, not for running Mirage
 
 
 def read_version() -> str:
@@ -72,9 +76,52 @@ def log(msg: str) -> None:
         pass
 
 
+def migrate_from_app_folder():
+    """Mirage before 3.0 kept your settings next to its code. Move them to the data folder, once, so the installed
+    app (and any later update) finds them."""
+    if DATA_DIR == BASE_DIR:
+        return
+    import shutil
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    moved = []
+    for name in ("config.json", "reminders.json", "model"):
+        old, new = BASE_DIR / name, DATA_DIR / name
+        if old.exists() and not new.exists():
+            try:
+                shutil.move(str(old), str(new))
+                moved.append(name)
+            except Exception as e:
+                log(f"Couldn't move {name} to {DATA_DIR}: {e}")
+    old_notes = BASE_DIR / "memory"
+    if old_notes.is_dir() and any(old_notes.rglob("*.md")):
+        try:
+            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
+            if not (cfg.get("vault_path") or "").strip():
+                if not paths.NOTES.exists():
+                    paths.NOTES.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old_notes), str(paths.NOTES))
+                    moved.append(f"notes (now in {paths.NOTES})")
+                else:  # Documents\Mirage is taken: keep using the old folder
+                    cfg["vault_path"] = str(old_notes)
+                    CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception as e:
+            log(f"Couldn't move the notes folder: {e}")
+    if moved:
+        log(f"Moved {', '.join(moved)} to {DATA_DIR}.")
+
+
+migrate_from_app_folder()
+
+
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
+# Only for a brand-new install: someone who already uses Mirage keeps what they had
+NEW_INSTALL = {"builtins_off": ["roblox"], "setup_done": False}
+
 DEFAULT_CONFIG = {
     "wake_words": ["mirage", "mirages", "my rage", "mirror"],
     "command_timeout_seconds": 6,
@@ -128,6 +175,7 @@ DEFAULT_CONFIG = {
     "claude_power": False,               # let Claude Code run commands and edit files
     "voice_commands": [],                # your own shortcuts: {"phrase", "action", "target"}
     "builtins_off": [],                  # built-in command groups you turned off (see BUILTIN_GROUPS)
+    "setup_done": True,                  # the first-run setup has been shown (new installs start with False)
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
     "update_repo": "",             # "" = use UPDATE_REPO
@@ -179,14 +227,18 @@ DEFAULT_CONFIG = {
 def load_config() -> dict:
     defaults = json.loads(json.dumps(DEFAULT_CONFIG))
     if not CONFIG_PATH.exists():
+        defaults.update(json.loads(json.dumps(NEW_INSTALL)))
         save_config(defaults)
-        log("Created config.json with default settings.")
+        log("New install: created settings.")
         return defaults
     try:
         cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception as e:
         log(f"config.json is invalid ({e}); using defaults.")
         return defaults
+    if "setup_done" not in cfg:  # settings from before 3.0: this person already set Mirage up
+        cfg["setup_done"] = True
+        cfg.setdefault("builtins_off", [])
     for k, v in defaults.items():
         cfg.setdefault(k, v)
     cfg["apps"].setdefault(SYSTEM, {})
@@ -194,6 +246,7 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     os.replace(tmp, CONFIG_PATH)
@@ -380,7 +433,7 @@ def _echo_letters(heard: str, said: str) -> int:
 
 def echo_score(heard: str, said: str) -> float:
     """How much of what was heard is Mirage's own voice (1.0: all of it). Works on letters, so
-    "the six eared macro" still matches "the Six-eared Macaque", and "1754" matches "17:54"."""
+    "the wether today" still matches "the weather today", and "1754" matches "17:54"."""
     n = len(_letters(heard))
     return _echo_letters(heard, said) / n if n else 0.0
 
@@ -1881,17 +1934,17 @@ class Engine:
 # Built-in command groups, shown on the Shortcuts page where each can be turned off
 BUILTIN_GROUPS = [
     ("mirage", "Mirage itself", ["shut down", "show yourself", "mute the mic"]),
-    ("memory", "Memory", ["remember that my favourite colour is purple", "forget about the door", "what do you know about me",
+    ("memory", "Memory", ["remember that my favourite colour is purple", "forget about my colour", "what do you know about me",
                           "get to know me", "what did we talk about yesterday"]),
-    ("todos", "To-do list", ["add fix the door to my to-do list", "what's on my to-do list", "check off fix the door"]),
+    ("todos", "To-do list", ["add buy milk to my to-do list", "what's on my to-do list", "check off buy milk"]),
     ("timers", "Timers", ["set a timer for 10 minutes", "remind me in 5 minutes"]),
     ("reminders", "Reminders", ["remind me at 5 pm to stretch", "what are my reminders", "clear my reminders"]),
-    ("roblox", "Roblox Studio", ["playtest", "stop playtest", "save the game"]),
+    ("roblox", "Roblox Studio (for game makers)", ["playtest", "stop playtest", "save the game"]),
     ("spotify", "Spotify", ["play chill (a saved playlist)", "stop the music", "play music", "what's playing"]),
     ("play", "Play songs and videos", ["play lofi beats", "play never gonna give you up on spotify"]),
     ("media", "Media keys", ["volume up", "next song", "pause", "mute"]),
     ("search", "Search", ["search for cheap headphones", "search youtube for roblox tutorials"]),
-    ("open", "Open apps, sites and games", ["open youtube", "open discord", "open limbless"]),
+    ("open", "Open apps, sites and games", ["open youtube", "open discord", "open notepad"]),
     ("typing", "Typing", ["type hello everyone"]),
     ("screen", "Look at the screen", ["what's on my screen"]),
     ("weather", "Weather", ["what's the weather", "will it rain tomorrow"]),
@@ -1902,7 +1955,7 @@ BUILTIN_GROUPS = [
     ("pc", "Lock and close", ["lock the computer", "close this window", "close this tab"]),
     ("quiet", "Quiet mode", ["do not disturb for 2 hours", "quiet mode until 6 pm", "you can talk again"]),
     ("greetings", "Greetings", ["hello"]),
-    ("facts", "Quick facts (when Claude is off)", ["who is Sun Wukong"]),
+    ("facts", "Quick facts (when there's no brain)", ["who is Ada Lovelace"]),
 ]
 
 
@@ -1985,7 +2038,7 @@ def apply_update(repo: str, progress=lambda msg: None) -> list:
         progress("Installing update…")
         for src in root.rglob("*"):
             rel = src.relative_to(root)
-            if rel.parts[0] in KEEP_ON_UPDATE or src.is_dir():
+            if rel.parts[0] in KEEP_ON_UPDATE or src.is_dir() or src.suffix.lower() == ".bat":
                 continue
             dest = BASE_DIR / rel
             new = src.read_bytes()
@@ -1998,12 +2051,8 @@ def apply_update(repo: str, progress=lambda msg: None) -> list:
             changed.append(str(rel))
     if "requirements.txt" in changed:
         progress("Installing new packages…")
-        python = Path(sys.executable)
-        if python.name.lower() == "pythonw.exe":
-            python = python.with_name("python.exe")
-        flags = 0x08000000 if SYSTEM == "Windows" else 0  # CREATE_NO_WINDOW
-        subprocess.run([str(python), "-m", "pip", "install", "-r", str(BASE_DIR / "requirements.txt")],
-                       creationflags=flags, check=False)
+        subprocess.run(paths.pip("install", "--disable-pip-version-check", "-r", str(BASE_DIR / "requirements.txt")),
+                       creationflags=paths.NO_WINDOW, check=False)
     log(f"Updated to {read_version()}: {', '.join(changed) or 'no file changes'}")
     return changed
 
