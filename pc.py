@@ -141,6 +141,8 @@ ALIASES = {
     "winword": ["word"], "excel": ["excel"], "powerpnt": ["powerpoint"], "olk": ["outlook", "mail"],
     "outlook": ["outlook", "mail"], "telegram": ["telegram"], "vlc": ["vlc"], "blender": ["blender"],
 }
+NICE = {"explorer": "File Explorer", "robloxstudiobeta": "Roblox Studio", "robloxplayerbeta": "Roblox",
+        "msedge": "Edge", "code": "VS Code", "windowsterminal": "Terminal"}
 FILLER = re.compile(r"\b(?:the|my|a|an|window|windows|app|application|program)\b")
 THIS = re.compile(r"^(?:this|it|that|here|current|active|this one|the one i'?m (?:on|in|using))?$")
 
@@ -199,7 +201,7 @@ def _file_description(path: str) -> str:
                     lang, cp = struct.unpack("<HH", ctypes.string_at(p.value, 4))
                     key = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"
                     if version.VerQueryValueW(buf, key, ctypes.byref(p), ctypes.byref(n)) and n.value:
-                        desc = ctypes.wstring_at(p.value, n.value).rstrip("\0").strip()
+                        desc = ctypes.wstring_at(p.value, n.value).split("\0")[0].strip()  # some apps pad it with junk
     except Exception:
         desc = ""
     _describe_cache[path] = desc
@@ -232,7 +234,7 @@ class Win:
             desc = desc if desc and desc.lower() != "electron" else ""
         # the name to say out loud: "Google Chrome", "Discord"; modern Windows apps go by their title
         tail = re.split(r"\s+[-—–|]\s+", self.title)[-1].strip() if self.title else ""
-        self.app = (self.title if self.exe == "applicationframehost" else desc or tail or self.exe).strip()
+        self.app = (NICE.get(self.exe) or (self.title if self.exe == "applicationframehost" else desc or tail or self.exe)).strip()
         self.names = {_norm(x) for x in [self.app, self.exe, desc, tail] + ALIASES.get(self.exe, []) if x}
 
     def __repr__(self):
