@@ -285,3 +285,14 @@ textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(217, 169,
   .sublist { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--gold-line); padding: 0 0 8px; }
   .row { flex-direction: column; align-items: flex-start; }
 }
+
+/* memory: facts grouped by topic, past chats by day */
+.list li.group { border-bottom: 0; padding: 18px 4px 4px; gap: 8px; }
+.list li.group h3 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--gold-hi); }
+.list li.group .count { color: var(--muted); font-size: 12px; }
+.list li .tag { margin-left: 8px; font-size: 11px; padding: 1px 7px; border-radius: 999px; color: #c9b2ff;
+  border: 1px solid rgba(183, 148, 255, .35); vertical-align: 1px; }
+.list li.chat { align-items: flex-start; }
+.list li.chat .t { display: flex; flex-direction: column; gap: 3px; }
+.list li.chat .you { color: var(--mist); }
+.list li.chat .said { color: var(--muted); font-size: 13.5px; }

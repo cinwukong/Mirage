@@ -345,12 +345,18 @@ class Memory:
         return f
 
     # ---- remember / recall ----
-    def remember(self, fact: str):
-        fact = fact.strip().rstrip(".")
-        if not fact:
-            return False
+    def remember(self, fact: str, topic: str = None, noticed: bool = False):
+        """Save a fact. topic: who/what it's about ("Me", "Bullet Train", "Emma"); worked out when not given.
+        noticed: Mirage picked it up from a conversation (tagged #noticed) rather than being told to remember it."""
+        fact = re.sub(r"\s+", " ", redact(fact)).strip().rstrip(".")
+        if not fact or SECRET_FACT.search(fact):
+            return False  # passwords, codes and card numbers are never kept
         self._hub()
-        subject = fact_subject(fact, self._titles())
+        titles = self._titles()
+        if topic:
+            topic = "Me" if topic.strip().lower() in ("me", "user", "the user", "myself", "i") else \
+                titles.get(topic.strip().lower()) or topic_title(topic)
+        subject = topic or fact_subject(fact, titles)
         extra = [subject] if subject and subject != "Me" else []
         for t in extra:
             self._topic_note(t)
@@ -359,12 +365,57 @@ class Memory:
             self._topic_note("Me")
             text += " · [[Me]]"
             linked.append("Me")
+        elif subject and subject not in linked:
+            text += f" · [[{subject}]]"
+            linked.append(subject)
+        if noticed:
+            text += " #noticed"
         stamp = f"{datetime.now():%Y-%m-%d %H:%M}"
         self._append(self.folder / "Memory.md", f"- {stamp} — {text}",
-                     "# Mirage memory\nThings you asked Mirage to remember. Part of [[Mirage]]. "
-                     "Edit or delete freely.\n\n")
+                     "# Mirage memory\nThings Mirage remembers about you. Lines tagged #noticed it picked up from your "
+                     "conversations. Part of [[Mirage]]. Edit or delete freely.\n\n")
         self._file_under_topics(stamp, text, linked)
         return True
+
+    def facts(self, limit=400):
+        """Everything remembered, oldest first: [{line, when, text, topic, noticed}]."""
+        return [parse_fact(l) for l in self.memory_lines(limit)]
+
+    def me_facts(self, limit=30):
+        return [f for f in self.facts() if f["topic"] == "Me"][-limit:]
+
+    def relevant_facts(self, query: str, limit=8, skip=()):
+        """Remembered facts that share words with the question, best first."""
+        keys = {_stem(w) for w in re.findall(r"[a-z0-9']+", query.lower()) if w not in STOPWORDS and len(w) > 2}
+        if not keys:
+            return []
+        scored = []
+        for f in self.facts():
+            if f["line"] in skip:
+                continue
+            words = {_stem(w) for w in re.findall(r"[a-z0-9']+", (f["text"] + " " + (f["topic"] or "")).lower())}
+            hits = len(keys & words)
+            if hits:
+                scored.append((hits / len(keys), f["when"], f))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)  # best match first, newer first on ties
+        return [f for score, _, f in scored if score >= 0.34][:limit]
+
+    def find_fact(self, text: str, cutoff=0.6):
+        """The remembered line that best matches some wording (for corrections), or None."""
+        want = {_stem(w) for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in STOPWORDS}
+        best, best_score = None, 0.0
+        for f in self.facts():
+            have = {_stem(w) for w in re.findall(r"[a-z0-9']+", f["text"].lower()) if w not in STOPWORDS}
+            if want and have:
+                score = len(want & have) / len(want | have)
+                if score > best_score:
+                    best, best_score = f, score
+        return best if best_score >= cutoff else None
+
+    def replace_fact(self, old_line: str, fact: str, topic=None, noticed=True):
+        """A correction: take the old fact out everywhere and save the new one."""
+        self.delete_memory_line(old_line)
+        return self.remember(fact, topic, noticed)
 
     def _file_under_topics(self, stamp, text, linked):
         for title in dict.fromkeys(linked):
@@ -421,12 +472,13 @@ class Memory:
             return 0
         with self.lock:
             lines = f.read_text(encoding="utf-8").splitlines()
-            keep = [l for l in lines if not (l.startswith("- ") and all(k in l.lower() for k in keys))]
-            removed = len(lines) - len(keep)
-            if removed:
-                f.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            gone = [l for l in lines if l.startswith("- ") and all(k in l.lower() for k in keys)]
+            if gone:
+                f.write_text("\n".join(l for l in lines if l not in gone) + "\n", encoding="utf-8")
+        for l in gone:
+            self._remove_from_topics(l)
         self._index = None
-        return removed
+        return len(gone)
 
     def _build_index(self):
         if self._index is not None and time.time() - self._index_time < 60:
@@ -538,8 +590,28 @@ class Memory:
                 return False
             lines.remove(line)
             f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._remove_from_topics(line)
         self._index = None
         return True
+
+    def _remove_from_topics(self, line: str):
+        """Take a fact's copies out of the topic notes too (they're Mirage's own notes)."""
+        m = re.match(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — (.+)$", line)
+        topics = self.folder / "Topics"
+        if not m or not topics.is_dir():
+            return
+        stamp, text = m.groups()
+        core = re.sub(r"\s*(?:·\s*\[\[[^\]]+\]\]|#noticed)\s*$", "", text)
+        core = re.sub(r"\s*(?:·\s*\[\[[^\]]+\]\]|#noticed)\s*$", "", core)
+        for note in topics.glob("*.md"):
+            try:
+                lines = note.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            keep = [l for l in lines if not (l.startswith(f"- {stamp} — ") and core in l)]
+            if len(keep) != len(lines):
+                with self.lock:
+                    note.write_text("\n".join(keep) + "\n", encoding="utf-8")
 
     def complete_todo(self, words: str):
         keys = [w for w in re.findall(r"[a-z0-9']+", words.lower()) if w not in STOPWORDS]
@@ -574,9 +646,79 @@ class Memory:
         self._append(f, line, f"# Mirage log {datetime.now():%Y-%m-%d}\n\nPart of [[Mirage]].\n\n")
 
 
+def _stem(w: str) -> str:
+    """Rough word stem so "games" finds "game" and "playing" finds "play"."""
+    for end in ("'s", "ing", "es", "s"):
+        if w.endswith(end) and len(w) - len(end) >= 3:
+            return w[:-len(end)]
+    return w
+
+
+# Things that must never end up in memory or the chat history
+_SECRETS = [
+    (re.compile(r"\b(password|passcode|pass code|pin code|pin|login code|verification code|security code)"
+                r"(\s*(?:is|was|:|=)\s*)\S+", re.I), r"\1\2[hidden]"),
+    (re.compile(r"\b\d(?:[ -]?\d){11,18}\b"), "[number hidden]"),     # card and account numbers
+    (re.compile(r"\b\d{6}(?:\d{2})?[-+]?\d{4}\b"), "[number hidden]"),  # personal ID numbers (personnummer)
+]
+SECRET_FACT = re.compile(r"password|passcode|\bpin\b|pin code|login code|bank ?id|card number|account number|"
+                         r"social security|personnummer|\[hidden\]|\[number hidden\]", re.I)
+# what Mirage won't pick up by itself (you can still tell it to remember these, except secrets)
+SENSITIVE_FACT = re.compile(SECRET_FACT.pattern + r"|home address|lives at|phone number|diagnos|medication|\billness\b",
+                            re.I)
+
+
+def redact(text: str) -> str:
+    for pat, rep in _SECRETS:
+        text = pat.sub(rep, text or "")
+    return text
+
+
+def parse_fact(line: str) -> dict:
+    m = re.match(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — (.+)$", line.strip())
+    when, body = (m.group(1), m.group(2)) if m else ("", line.strip()[2:])
+    topic = None
+    t = re.search(r"·\s*\[\[([^\]|]+)", body) or re.search(r"\[\[([^\]|]+)", body)
+    if t:
+        topic = t.group(1).strip()
+    return {"line": line.strip(), "when": when, "text": clean_md(line), "topic": topic, "noticed": "#noticed" in body}
+
+
+_ADVERB = r"(?:really |also |usually |often |always |never |mostly |sometimes |still |just |only )?"
+
+
+def _you_verb(m):
+    adverb, verb = m.group(1) or "", m.group(2)
+    v = verb.lower()
+    special = {"is": "are", "was": "were", "has": "have", "does": "do", "doesn't": "don't", "isn't": "aren't",
+               "wasn't": "weren't", "hasn't": "haven't"}
+    if v in special:
+        new = special[v]
+    elif v.endswith("ies") and len(v) > 4:
+        new = verb[:-3] + "y"
+    elif v.endswith(("ches", "shes", "sses", "xes", "zes", "oes")):
+        new = verb[:-2]
+    elif v.endswith("s") and not v.endswith(("ss", "us")) and len(v) > 2:
+        new = verb[:-1]
+    else:
+        new = verb
+    return f"you {adverb}{new}"
+
+
+def spoken_fact(text: str) -> str:
+    """"The user's favourite colour is purple" -> "Your favourite colour is purple", "The user plays drums" ->
+    "You play drums": facts are kept about "the user" and said to you."""
+    t = re.sub(r"\bthe user's\b", "your", text, flags=re.I)
+    t = re.sub(r"\bthe user (" + _ADVERB + r")([a-z']+)\b", _you_verb, t, flags=re.I)
+    t = re.sub(r"\bthe user\b", "you", t, flags=re.I)
+    return t[:1].upper() + t[1:] if t else t
+
+
 def clean_md(line: str) -> str:
     """Turn a markdown line into something nice to read aloud."""
-    s = re.sub(r"\s*·\s*\[\[Me\]\]", "", line)
+    s = re.sub(r"\s*#noticed\b", "", line)
+    s = re.sub(r"\s*·\s*\[\[[^\]]+\]\]\s*$", "", s)
+    s = re.sub(r"\s*·\s*\[\[Me\]\]", "", s)
     s = re.sub(r"\s*\(from \[\[Memory\]\]\)", "", s)
     s = re.sub(r"^\s*[-*+]\s+(\[[ xX]\]\s*)?", "", s)
     s = re.sub(r"^#+\s*", "", s)

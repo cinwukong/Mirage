@@ -364,11 +364,15 @@ class LocalLLM:
         t = self.server_log_tail(20000)
         return "CUDA" in t or "Vulkan" in t or "offloaded" in t and "layers to GPU" in t
 
-    def chat(self, messages, tools=None, think=False, max_tokens=700, timeout=180):
-        """One OpenAI-style chat request. Returns the assistant message dict."""
+    def chat(self, messages, tools=None, think=False, max_tokens=700, timeout=180, json_schema=None):
+        """One OpenAI-style chat request. Returns the assistant message dict.
+        json_schema: make the answer JSON of that shape (llama.cpp enforces it with a grammar)."""
         m = MODELS[self.key]
         body = {"messages": messages, "max_tokens": max_tokens if not think else max_tokens * 4, "stream": False}
         body.update(m["sampling"])
+        if json_schema:
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": json_schema}}
+            body["temperature"] = 0.2
         if m["think"] == "kwargs":
             body["chat_template_kwargs"] = {"enable_thinking": bool(think)}
         if tools:

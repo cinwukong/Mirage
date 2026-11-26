@@ -56,6 +56,8 @@ function wire() {
   $$("#memTabs button").forEach(b => b.addEventListener("click", () => { memTab = b.dataset.tab; renderMemory(); }));
   $("#memAdd").addEventListener("click", memAdd);
   $("#memInput").addEventListener("keydown", e => { if (e.key === "Enter") memAdd(); });
+  $("#memInput").addEventListener("input", () => { if (memTab === "chats") { clearTimeout(chatTimer); chatTimer = setTimeout(renderChats, 250); } });
+  $("#interviewBtn").addEventListener("click", () => api().memory_action("interview", "").then(r => { if (r && r.message) toast(r.message); show("home"); }));
   document.addEventListener("click", e => {
     const act = e.target.closest("[data-act]");
     if (act) api()[act.dataset.act]();
@@ -260,9 +262,11 @@ function drawHolo(ts) {
 }
 
 /* ------------------------------------------------------------------ memory */
-let MEM = null;
+let MEM = null, chatTimer = null;
 async function renderMemory() {
   $$("#memTabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === memTab));
+  $("#memAdd").textContent = memTab === "chats" ? "Search" : "Add";
+  if (memTab === "chats") return renderChats();
   MEM = await api().get_memory();
   $("#vaultName").textContent = MEM.where;
   const ph = { memories: "Something to remember, like: my favourite colour is purple",
@@ -273,18 +277,15 @@ async function renderMemory() {
   const items = MEM[memTab];
   if (!items.length) {
     ul.append(h("li", { class: "empty" }, {
-      memories: "Nothing remembered yet. Say “mirage, remember that …” or add something above.",
+      memories: "Nothing remembered yet. Say “mirage, remember that …”, or “mirage, get to know me”. Mirage also notices things about you as you talk.",
       todos: "No to-dos. Say “mirage, add … to my to-do list”.",
       reminders: "No reminders. Say “mirage, remind me at 5 pm to …”.",
     }[memTab]));
     return;
   }
+  if (memTab === "memories") return renderFacts(ul, items);
   for (const it of items) {
-    if (memTab === "memories") {
-      ul.append(h("li", {}, h("span", { class: "when" }, it.when), h("span", { class: "t" }, it.text),
-        h("button", { class: "x", title: "Forget this", "aria-label": "Forget this",
-          onclick: () => api().memory_action("forget", it.line).then(renderMemory) }, "✕")));
-    } else if (memTab === "todos") {
+    if (memTab === "todos") {
       ul.append(h("li", { class: it.done ? "done" : "" },
         h("button", { class: "check" + (it.done ? " on" : ""), "aria-label": it.done ? "Mark as not done" : "Mark as done",
           onclick: () => api().memory_action("toggle_todo", it.i).then(renderMemory) }),
@@ -298,7 +299,43 @@ async function renderMemory() {
     }
   }
 }
+function renderFacts(ul, items) {
+  // grouped by who or what they're about: you first, then the rest A to Z
+  const groups = {};
+  for (const it of items) (groups[it.topic] = groups[it.topic] || []).push(it);
+  const names = Object.keys(groups).sort((a, b) => (a === "Me" ? -1 : b === "Me" ? 1 : a === "Other" ? 1 : b === "Other" ? -1 : a.localeCompare(b)));
+  for (const name of names) {
+    ul.append(h("li", { class: "group" }, h("h3", {}, name === "Me" ? "You" : name), h("span", { class: "count" }, String(groups[name].length))));
+    for (const it of groups[name]) {
+      ul.append(h("li", {}, h("span", { class: "when" }, it.when),
+        h("span", { class: "t" }, it.text, it.noticed ? h("span", { class: "tag", title: "Mirage picked this up from a conversation" }, "noticed") : null),
+        h("button", { class: "x", title: "Forget this", "aria-label": "Forget this",
+          onclick: () => api().memory_action("forget", it.line).then(renderMemory) }, "✕")));
+    }
+  }
+}
+async function renderChats() {
+  const q = $("#memInput").value.trim();
+  $("#memInput").placeholder = "Search what you and Mirage said";
+  const days = await api().get_chats(q);
+  if (memTab !== "chats") return;
+  const ul = $("#memList");
+  ul.textContent = "";
+  if (!days.length) {
+    ul.append(h("li", { class: "empty" }, q ? "Nothing found." : (C().chat_history === false
+      ? "Chat history is off (Settings, Memory)." : "No conversations yet. They show up here, and Mirage can look back at them: “mirage, what did we talk about yesterday?”")));
+    return;
+  }
+  for (const d of days) {
+    ul.append(h("li", { class: "group" }, h("h3", {}, d.day), h("span", { class: "count" }, String(d.items.length))));
+    for (const it of d.items) {
+      ul.append(h("li", { class: "chat" }, h("span", { class: "when" }, it.time),
+        h("span", { class: "t" }, h("span", { class: "you" }, it.you), it.mirage ? h("span", { class: "said" }, it.mirage) : null)));
+    }
+  }
+}
 async function memAdd() {
+  if (memTab === "chats") return renderChats();
   const i = $("#memInput");
   const t = i.value.trim();
   if (!t) return;
@@ -460,6 +497,12 @@ const SECTIONS = [
       custom("Where to keep notes", "Pick your Obsidian vault; Mirage writes into a Mirage folder inside it.", () => [
         selectEl(S.options.vaults, C().vault_path || "", v => setCfg({ vault_path: v }).then(() => toast("Notes now go to " + (v || "Mirage's own folder")))),
         btn("Browse…", () => api().browse_vault().then(r => { if (r) { S.cfg = r; renderSettings(); } }))]),
+      row("Learn from our conversations", "Mirage's own brain notices lasting things about you as you talk (what you like, your projects, people) and saves them, tagged “noticed”. Never passwords, codes or card numbers.",
+          toggleEl(C().auto_learn !== false, v => setCfg({ auto_learn: v }))),
+      row("Keep a history of our chats", "Saved on this PC only, so Mirage can look back: “what did we talk about yesterday?” Shown under Memory, Past chats.",
+          toggleEl(C().chat_history !== false, v => setCfg({ chat_history: v })),
+          sureBtn("Delete history", "Click again to delete", () => api().memory_action("clear_chats", "").then(r => toast(r.message)))),
+      custom("Get to know me", "Mirage asks you a few questions and remembers the answers.", () => [btn("Start", () => api().memory_action("interview", "").then(r => { toast(r.message); show("home"); }))]),
       toggle("daily_log", "Daily log", "Writes what you and Mirage said into a note for each day."),
       custom("Links for the graph", "Adds links to memories saved before Mirage linked them.", () => [btn("Link old memories", () => api().relink().then(m => toast(m)))]),
     ] },
@@ -504,6 +547,16 @@ function renderSettings() {
 function row(label, desc, ...ctl) {
   return h("div", { class: "row" }, h("div", { class: "lbl" }, label ? h("b", {}, label) : null, desc ? h("small", {}, desc) : null),
     h("div", { class: "ctl" }, ...ctl));
+}
+function sureBtn(label, sure, fn) {
+  // two clicks for things that can't be undone
+  let armed = null;
+  const b = btn(label, () => {
+    if (armed) { clearTimeout(armed); armed = null; b.textContent = label; b.classList.remove("danger"); fn(); return; }
+    b.textContent = sure; b.classList.add("danger");
+    armed = setTimeout(() => { armed = null; b.textContent = label; b.classList.remove("danger"); }, 4000);
+  });
+  return b;
 }
 function btn(label, fn, kind = "", title = null, id = null) {
   return h("button", { class: "btn " + kind, onclick: fn, title, id, "aria-label": title || label }, label);

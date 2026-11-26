@@ -208,17 +208,15 @@ class Bridge:
         e = self._app.engine
         mem, sk = e.memory, e.skills
         memories = []
-        for line in reversed(mem.memory_lines(200)):
-            when = ""
-            import re
-            m = re.match(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — ", line)
-            if m:
-                try:
-                    when = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").strftime("%d %b, %H:%M").lstrip("0")
-                except ValueError:
-                    when = m.group(1)
-            text = sk.clean_md(line)
-            memories.append({"line": line, "when": when, "text": text[:1].upper() + text[1:]})
+        for f in reversed(mem.facts(400)):
+            when = f["when"]
+            try:
+                when = datetime.strptime(when, "%Y-%m-%d %H:%M").strftime("%d %b, %H:%M").lstrip("0")
+            except ValueError:
+                pass
+            text = sk.spoken_fact(f["text"])
+            memories.append({"line": f["line"], "when": when, "text": text, "topic": f["topic"] or "Other",
+                             "noticed": f["noticed"]})
         todos = [{"i": i, "text": t, "done": d} for i, t, d in mem.todo_entries()]
         todos.sort(key=lambda x: x["done"])
         reminders = [{"id": r["id"], "text": r["text"][:1].upper() + r["text"][1:],
@@ -226,7 +224,14 @@ class Bridge:
                       + sk.say_time(datetime.fromisoformat(r["when"]))[1:]}
                      for r in e.reminders.upcoming()]
         where = mem.vault.name if mem.is_obsidian() else "Mirage's own folder"
-        return {"where": where, "memories": memories, "todos": todos, "reminders": reminders}
+        return {"where": where, "memories": memories, "todos": todos, "reminders": reminders,
+                "chats_on": bool(e.chats and e.cfg.get("chat_history", True))}
+
+    def get_chats(self, query=""):
+        e = self._app.engine
+        if not e.chats:
+            return []
+        return e.chats.by_day(str(query or "").strip(), 300)
 
     def memory_action(self, kind, payload):
         e = self._app.engine
@@ -259,6 +264,13 @@ class Bridge:
         if kind == "delete_reminder":
             e.reminders.remove(int(payload))
             return {}
+        if kind == "clear_chats":
+            if e.chats:
+                e.chats.clear()
+            return {"message": "Chat history deleted."}
+        if kind == "interview":
+            e.submit_text("get to know me")
+            return {"message": "Mirage will ask you a few questions."}
         return {"error": f"Unknown action {kind}"}
 
     def open_vault(self):

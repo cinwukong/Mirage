@@ -62,6 +62,16 @@ with no other apps:
 - Mirage notices when it can hear its own voice (speakers instead of a headset). Then only "Mirage, …" cuts it off,
   so it doesn't interrupt itself. It switches back when you put the headset on.
 
+## Memory
+- **Things it remembers:** say "remember that …", or let it notice: when a conversation goes quiet, Mirage's own
+  brain picks out lasting things about you (what you like, your projects, the people in your life) and saves
+  them, tagged *noticed*. If you correct something ("actually I play drums now"), the old fact is replaced.
+  Passwords, codes and card numbers are never kept, even if you ask.
+- **Get to know me:** say "get to know me" (or press the button on the Memory page) and Mirage asks a few questions.
+- **Past chats:** conversations are kept on this PC (not in your notes), so you can ask "what did we talk about
+  yesterday?" or search them on the Memory page. Turn it off or delete it under **Settings → Memory**.
+- Everything is grouped by who or what it's about on the Memory page, and stays as linked notes in Obsidian.
+
 ## Windows and using your PC
 - **Window shortcuts** (no brain needed): "switch to Discord", "snap this left", "put Chrome and Discord side by
   side", "move this to my other screen", "minimize Spotify", "minimize everything", "maximize", "what's open",

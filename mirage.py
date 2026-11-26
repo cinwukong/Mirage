@@ -82,6 +82,8 @@ DEFAULT_CONFIG = {
     "follow_up_seconds": 8,
     "barge_in": True,              # talk over Mirage to cut it off (works best with a headset)
     "pc_control": True,            # the brain may use the mouse and keyboard (Esc stops it)
+    "auto_learn": True,            # Mirage's own brain notices lasting facts about you in conversations
+    "chat_history": True,          # keep a searchable history of conversations on this PC
     "input_device": None,          # None = system default microphone
     "voice_engine": "windows",     # "windows", "mirage" (Mirage's own AI voice) or "voicestudio"
     "kokoro_voice": "af_bella",    # Mirage's own voice (Kokoro), see speech.VOICES
@@ -792,6 +794,13 @@ class Engine:
         except Exception as e:
             log(f"Couldn't repair the vault setting: {e}")
         self.memory = skills.Memory(lambda: self.cfg)
+        import recall
+        self.recall = recall
+        try:
+            self.chats = recall.ChatLog(redact=skills.redact)
+        except Exception as e:
+            log(f"Chat history unavailable: {e}")
+            self.chats = None
         self.reminders = skills.Reminders(self._reminder_due)
         self._last_reply = None
         import speech
@@ -868,6 +877,7 @@ class Engine:
     def start(self):
         threading.Thread(target=self._audio_loop, daemon=True, name="mirage-audio").start()
         threading.Thread(target=self._worker, daemon=True, name="mirage-worker").start()
+        threading.Thread(target=self._learn_loop, daemon=True, name="mirage-learn").start()
 
     def stop(self):
         self.running = False
@@ -890,21 +900,30 @@ class Engine:
 
     def confirm(self, question: str, timeout=20.0) -> bool:
         """Ask out loud and wait for "yes" (said or typed). Anything else, Esc, or silence is a no."""
+        said = self.ask_user(question, timeout)
+        yes = said is not None and self._is_yes(said)
+        log(f"Asked {question!r}: {'yes' if yes else 'no'} ({said!r})")
+        return yes
+
+    def _is_yes(self, text) -> bool:
+        c = re.sub(r"^(?:mirage[, ]+)", "", text.lower().strip(" .,!?"))
+        return bool(self.YES.match(c)) and not re.search(r"\b(?:no|not|don'?t|stop|cancel|wait)\b", c)
+
+    def ask_user(self, question: str, timeout=25.0):
+        """Ask something out loud and wait for the answer, said or typed. None if nothing comes."""
         ev, answer = threading.Event(), {}
         self._confirming = (ev, answer)
         try:
             self.voice._hushed = -1  # always ask, even if you cut Mirage off earlier
             self.voice.say(question)
-            end = time.time() + 12
-            while self.voice.speaking.is_set() and time.time() < end:
+            end = time.time() + 15
+            while self.voice.speaking.is_set() and time.time() < end and not ev.is_set():
                 time.sleep(0.05)
             self.open_follow_up(timeout)
             end = time.time() + timeout + 3
             while not ev.is_set() and time.time() < end and not self.hands.stopped():
                 ev.wait(0.1)
-            yes = bool(answer.get("yes"))
-            log(f"Asked {question!r}: {'yes' if yes else 'no'} ({answer.get('said', 'no answer')!r})")
-            return yes
+            return answer.get("said")
         finally:
             self._confirming = None
             with self._follow_lock:
@@ -918,10 +937,86 @@ class Engine:
         if not pending:
             return False
         ev, answer = pending
-        c = re.sub(r"^(?:mirage[, ]+)", "", text.lower().strip(" .,!?"))
-        answer.update(yes=bool(self.YES.match(c)) and not re.search(r"\b(?:no|not|don'?t|stop|cancel|wait)\b", c), said=text)
+        answer["said"] = text
         ev.set()
         return True
+
+    # ---- learning about you ----
+    def _learn_loop(self):
+        """When a conversation has been quiet for a minute, let Mirage's own brain pick out what it learned."""
+        while self.running:
+            time.sleep(20)
+            try:
+                if self._quiet_enough():
+                    self.learn_now()
+            except Exception as e:
+                log(f"Learning from the conversation failed: {e}")
+                time.sleep(120)
+
+    def _quiet_enough(self) -> bool:
+        if not (self.chats and self.cfg.get("auto_learn", True) and self.cfg.get("brain") == "local"):
+            return False
+        lb = self.brains["local"]
+        if not (lb.available() and lb.llm.running() and lb.llm.key == lb.key()):
+            return False  # never wake the brain (and take graphics memory) just to learn
+        busy = self.status not in ("listening", "muted") or not self.cmd_q.empty() or self.voice.speaking.is_set() \
+            or self.hands.active or self._confirming
+        return not busy and time.time() - self.chats.last_time() >= 60
+
+    def learn_now(self) -> list:
+        rows = self.chats.pending(24)
+        if not rows:
+            return []
+        talk = [r for r in rows if len(r["you"].split()) >= 4]  # "pause", "next song" teach nothing
+        saved = []
+        if talk:
+            convo = "\n".join(f"User: {r['you']}" + (f"\nMirage: {r['mirage'][:300]}" if r["mirage"] else "") for r in talk)
+            known = [f"[{f['topic'] or 'Me'}] {f['text']}" for f in self.memory.facts()]
+            facts = self.recall.ask_for_facts(self.brains["local"].llm, convo, known)
+            saved = self.recall.save_facts(self.memory, facts, log, self.skills.SENSITIVE_FACT)
+            if saved:
+                self.emit("memory_changed")
+        self.chats.mark_learned([r["id"] for r in rows])
+        return saved
+
+    def interview(self):
+        """"Get to know me": a few questions, the answers saved to memory."""
+        rc = self.recall
+        known = " ".join(f["text"] for f in self.memory.me_facts(80)).lower()
+        lb = self.brains["local"]
+        use_brain = self.cfg.get("brain") == "local" and lb.available()
+        if use_brain:
+            ok, why = lb._ensure_running()
+            use_brain = ok
+        self.voice.say("Okay, a few quick questions so I know you better. Say skip to skip one, or stop when you've had enough.")
+        saved, asked = 0, 0
+        for key, question, known_re in rc.INTERVIEW:
+            if key != "style" and re.search(known_re, known) and asked < 5:
+                continue  # I already know this
+            said = self.ask_user(question, 30)
+            asked += 1
+            if said is None:
+                self.voice.say("I'll stop there.")
+                break
+            low = re.sub(r"^(?:mirage[, ]+)", "", said.lower().strip(" .,!?"))
+            if rc.INTERVIEW_STOP.fullmatch(low):
+                break
+            if rc.INTERVIEW_SKIP.fullmatch(low):
+                continue
+            facts = []
+            if use_brain:
+                try:
+                    known_list = [f"[{f['topic'] or 'Me'}] {f['text']}" for f in self.memory.facts()]
+                    facts = rc.ask_for_facts(lb.llm, f"Mirage: {question}\nUser: {said}", known_list)
+                except Exception as e:
+                    log(f"Interview: the brain couldn't sort that answer: {e}")
+            if not facts:
+                facts = [{"topic": "Me", "fact": f"Asked \"{question}\", the user said: {said}", "replaces": ""}]
+            saved += len(rc.save_facts(self.memory, facts, log, self.skills.SENSITIVE_FACT, noticed=False))
+            self.set_status("thinking")
+        self.emit("memory_changed")
+        return (f"Thanks. I saved {saved} thing{'s' if saved != 1 else ''} about you. You can see them on the Memory page."
+                if saved else "Okay. Ask me again any time.")
 
     def _hands_on(self):
         self.set_status("acting", "Using your PC. Press Esc to stop.")
@@ -1011,6 +1106,8 @@ class Engine:
             try:
                 self.handle(text)
                 self.memory.log_exchange(text, self._last_reply or "")
+                if self.chats and self.cfg.get("chat_history", True):
+                    self.chats.add(text, self._last_reply or "")
             except Exception as e:
                 log(f"Error handling '{text}': {e}")
                 self.voice.say("Something went wrong.")
@@ -1456,15 +1553,36 @@ class Engine:
         if on("memory"):
             m = re.match(r"^(?:please )?(?:remember|don'?t forget|note) (?:that )?(.+)$", text)
             if m and not text.startswith("remember to remind"):
-                mem.remember(m.group(1))
+                if not mem.remember(m.group(1)):
+                    return say("I don't keep passwords, codes or card numbers. Keep those somewhere safe instead.")
                 return say("Got it. I'll remember that.")
             m = re.match(r"^forget (?:that |about )?(.+)$", text)
             if m:
                 n = mem.forget(m.group(1))
                 return say("Forgotten." if n else "I couldn't find that in my memory.")
-            if re.fullmatch(r"what do you (?:remember|know)(?: about me)?", text):
-                lines = [sk.clean_md(l) for l in mem.memory_lines(3)]
-                return say("You told me: " + "; ".join(lines) + "." if lines else "You haven't asked me to remember anything yet.")
+            if re.fullmatch(r"(?:get to know me|interview me|ask me (?:some |a few )?questions(?: about me)?|"
+                            r"learn about me|let'?s get to know each other)", text):
+                return say(self.interview())
+            if re.fullmatch(r"what do you (?:remember|know)(?: about me)?|what have you learned about me|"
+                            r"who am i|tell me about (?:myself|me)", text):
+                facts = mem.me_facts(40)
+                if not mem.facts():
+                    return say("Nothing yet. Tell me things, or say get to know me.")
+                if self.brain.available():
+                    return say(self.brain.ask("In two or three sentences, tell me what you know about me."))
+                return say("Here's some of it. " + ". ".join(sk.spoken_fact(f["text"]) for f in (facts or mem.facts())[-4:]) + ".")
+            m = re.fullmatch(r"what (?:did|have) (?:we|i) (?:talk(?:ed)? about|say|said|ask(?:ed)? you|chat(?:ted)? about)"
+                             r"(?: (today|yesterday|earlier(?: today)?|this week|last week|this morning|(?:on |last )?\w+day))?",
+                             text)
+            if m and self.chats:
+                when = m.group(1) or "today"
+                rows = self.chats.search("", when, 25)
+                if not rows:
+                    return say(f"We didn't talk {when}." if when not in ("today", "earlier") else "We haven't talked yet today.")
+                if self.brain.available():
+                    return say(self.brain.ask(f"{text}\n\n(Our conversations {when}, for you to summarise briefly:\n"
+                                              f"{self.recall.chats_text(list(reversed(rows)))})"))
+                return say("You asked me: " + "; ".join(r["you"] for r in list(reversed(rows))[:5]) + ".")
             m = re.match(r"^(?:what do you (?:remember|know) about|what did i (?:say|tell you) about|"
                          r"search (?:in )?my notes (?:for|about)|search notes for|look in my notes for|"
                          r"find (?:in )?my notes(?: about)?|check my notes (?:for|about)) (.+)$", text)
@@ -1688,7 +1806,8 @@ class Engine:
 # Built-in command groups, shown on the Shortcuts page where each can be turned off
 BUILTIN_GROUPS = [
     ("mirage", "Mirage itself", ["shut down", "show yourself", "mute the mic"]),
-    ("memory", "Memory", ["remember that my favourite colour is purple", "forget about the door", "what do you know about Bullet Train"]),
+    ("memory", "Memory", ["remember that my favourite colour is purple", "forget about the door", "what do you know about me",
+                          "get to know me", "what did we talk about yesterday"]),
     ("todos", "To-do list", ["add fix the door to my to-do list", "what's on my to-do list", "check off fix the door"]),
     ("timers", "Timers", ["set a timer for 10 minutes", "remind me in 5 minutes"]),
     ("reminders", "Reminders", ["remind me at 5 pm to stretch", "what are my reminders", "clear my reminders"]),

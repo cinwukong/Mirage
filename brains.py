@@ -27,9 +27,12 @@ PERSONA = (
     "in what you say. Be calm, confident and a little playful. "
     "Input comes from speech recognition and can contain misheard words; interpret it sensibly. "
     "Use Mirage's tools (remember, notes, to-dos, reminders, weather, opening things, media, the screen) "
-    "whenever they help. When the user tells you something about themselves or their projects that is "
-    "worth keeping, save it with remember. If you did something, say briefly what you did."
+    "whenever they help. {remember} If you did something, say briefly what you did."
 )
+REMEMBER_ALWAYS = ("When the user tells you something about themselves or their projects that is worth keeping, "
+                   "save it with remember.")
+REMEMBER_ASKED = ("Only use remember when the user asks you to remember something; Mirage notices other lasting "
+                  "facts about the user by itself after the conversation.")
 
 
 PC_GUIDE = (
@@ -51,7 +54,9 @@ def pc_allowed(engine) -> bool:
 def persona(engine) -> str:
     """Who Mirage is, plus the personality the user wrote in Settings."""
     extra = (engine.cfg.get("personality") or "").strip()
-    return (PERSONA + (f"\n\n{PC_GUIDE}" if pc_allowed(engine) else "")
+    learns = engine.cfg.get("auto_learn", True) and engine.cfg.get("brain") == "local"
+    base = PERSONA.replace("{remember}", REMEMBER_ASKED if learns else REMEMBER_ALWAYS)
+    return (base + (f"\n\n{PC_GUIDE}" if pc_allowed(engine) else "")
             + (f"\n\nYour personality, as the user describes it: {extra}" if extra else ""))
 
 
@@ -71,24 +76,37 @@ def _log(msg):
         print(msg)
 
 
-def context_block(engine, text: str) -> str:
-    """Memory, matching notes and to-dos to give the brain for this request."""
-    sk = engine.skills
+def context_block(engine, text: str, fresh: bool = False) -> str:
+    """What the brain should know for this request: about the user, related memories and notes, to-dos, and
+    (fresh: the brain has just started) what was said in the last little while."""
+    sk, mem = engine.skills, engine.memory
     parts = [f"Current time: {datetime.now():%A %Y-%m-%d %H:%M}."]
     try:
-        mem = [sk.clean_md(l) for l in engine.memory.memory_lines(30)]
-        if mem:
-            parts.append("Things the user asked you to remember:\n" + "\n".join(f"- {m}" for m in mem))
-        notes = engine.memory.search(text, 6)
+        me = mem.me_facts(30)
+        if me:
+            parts.append("What you know about the user:\n" + "\n".join(f"- {f['text']}" for f in me))
+        shown = {f["line"] for f in me}
+        rel = mem.relevant_facts(text, 8, skip=shown)
+        shown |= {f["line"] for f in rel}
+        latest = [f for f in mem.facts()[-12:] if f["line"] not in shown][-6:]
+        more = rel + latest
+        if more:
+            parts.append("Other things you remember:\n" + "\n".join(
+                f"- {f['text']}" + (f" ({f['topic']})" if f["topic"] and f["topic"] not in f["text"] else "") for f in more))
+        notes = [(n, l) for n, l in mem.search(text, 8) if n != "Memory" and "(from [[Memory]])" not in l][:6]
         if notes:
             parts.append("Possibly relevant lines from the user's notes:\n"
                          + "\n".join(f"- [{n}] {sk.clean_md(l)}" for n, l in notes))
         playlists = list((engine.cfg.get("spotify_playlists") or {}).keys())
         if playlists:
             parts.append("The user's saved Spotify playlists: " + ", ".join(playlists))
-        todos = engine.memory.todos()[:12]
+        todos = mem.todos()[:12]
         if todos:
             parts.append("Open to-do items: " + "; ".join(todos))
+        if fresh and getattr(engine, "chats", None) and engine.cfg.get("chat_history", True):
+            recent = engine.chats.recent(4, within=2 * 3600)
+            if recent:
+                parts.append("Your conversation with the user a little earlier:\n" + engine.recall.chats_text(recent, 1200))
     except Exception as e:
         _log(f"Context failed: {e}")
     return "\n\n".join(parts)
@@ -119,6 +137,11 @@ class Skills:
             e.memory.remember(args["fact"])
             e.emit("memory_changed")
             return "Saved to memory."
+        if name == "search_chats":
+            if not getattr(e, "chats", None):
+                return "There's no chat history."
+            rows = e.chats.search(args.get("query") or "", args.get("when") or "", 15)
+            return e.recall.chats_text(list(reversed(rows)))
         if name == "search_notes":
             hits = e.memory.search(args["query"], 8)
             return "\n".join(f"[{n}] {sk.clean_md(l)}" for n, l in hits) or "Nothing found in the notes."
@@ -187,6 +210,9 @@ class Skills:
 TOOL_SPECS = [
     ("remember", "Save a fact about the user or their projects to long-term memory.", {"fact": str}),
     ("search_notes", "Search the user's notes (Obsidian vault) and Mirage's memory.", {"query": str}),
+    ("search_chats", "Search your past conversations with the user. query: words to look for (may be empty); "
+                     "when: 'today', 'yesterday', 'this week', 'last week', a weekday, YYYY-MM-DD, or empty for any time.",
+     {"query": str, "when": str}),
     ("add_todo", "Add an item to the user's to-do list.", {"item": str}),
     ("list_todos", "List the user's open to-do items.", {}),
     ("complete_todo", "Check off a to-do item, matched by its words.", {"item": str}),
@@ -222,6 +248,7 @@ PC_TOOL_SPECS = [
 ]
 PC_NAMES = {n for n, _, _ in PC_TOOL_SPECS}
 OPTIONAL = {"set_timer": {"label"}, "play_media": {"service"}, "get_weather": {"day"}, "click": {"how"},
+            "search_chats": {"query", "when"},
             "scroll": {"amount", "target"}, "manage_window": {"name"}}
 
 
@@ -439,7 +466,7 @@ def _tool_label(name):
             "PowerShell": "Running a command…", "Write": "Writing a file…", "Edit": "Editing a file…",
             "search_notes": "Checking your notes…", "remember": "Saving to memory…",
             "look_at_screen": "Looking at your screen…", "get_weather": "Checking the weather…",
-            "list_controls": "Looking at the window…",
+            "list_controls": "Looking at the window…", "search_chats": "Thinking back…",
             "set_reminder": "Setting a reminder…"}.get(n, "Working on it…")
 
 
@@ -508,7 +535,7 @@ class ApiBrain:
         messages = self.history[-10:] + [{"role": "user", "content": content}]
         while messages and messages[0]["role"] != "user":
             messages.pop(0)
-        system = persona(self.e) + "\n\n" + context_block(self.e, text)
+        system = persona(self.e) + "\n\n" + context_block(self.e, text, fresh=not self.history)
         spoken = []
         rounds = 6
         try:
@@ -631,7 +658,7 @@ class LocalBrain:
         if not ok:
             return msg
         model = self.lb.MODELS[self.key()]
-        system = persona(self.e) + "\n\n" + context_block(self.e, text)
+        system = persona(self.e) + "\n\n" + context_block(self.e, text, fresh=not self.history)
         if think and model["think"] == "token":
             system = "<|think|>" + system
         content = text
