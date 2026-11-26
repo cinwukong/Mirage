@@ -1060,7 +1060,8 @@ class Engine:
                 self.emit("quit")
                 self.stop()
                 return
-            if re.fullmatch(r"(open|show) (your )?(settings|yourself|the app|your window|mirage|the interface)|show yourself", text):
+            if re.fullmatch(r"(open|show) (your )?(settings|yourself|yourselves|the app|your window|mirage|the interface)|"
+                            r"show (yourself|yourselves|up)", text):
                 self.emit("show_window")
                 return say("Here I am.")
             if re.fullmatch(r"(mute (the |your )?(mic|microphone)|stop listening)", text):

@@ -4,6 +4,7 @@ the engine, the tray icon and the corner hologram.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -78,6 +79,24 @@ def open_path(path: Path):
 # The bridge: every public method here can be called from web/app.js
 # (attributes start with "_" so the window doesn't try to expose them)
 # --------------------------------------------------------------------------- #
+def fresh_page_after_update():
+    """The window keeps a cached copy of the page between runs. After an update, throw it away so the new page loads."""
+    store = M.BASE_DIR / ".webview"
+    marker = store / "page-version.txt"
+    try:
+        if marker.exists() and marker.read_text().strip() == M.VERSION:
+            return
+        for root, dirs, _ in os.walk(store):
+            for d in list(dirs):
+                if d in ("Cache", "Code Cache", "GPUCache", "Service Worker", "CacheStorage", "ScriptCache"):
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                    dirs.remove(d)
+        store.mkdir(exist_ok=True)
+        marker.write_text(M.VERSION)
+    except Exception as e:
+        M.log(f"Couldn't clear the page cache: {e}")
+
+
 class Bridge:
     def __init__(self, app):
         self._app = app
@@ -553,6 +572,7 @@ class App:
             except Exception:
                 pass
         self.refresh_options()
+        fresh_page_after_update()
         self.window = webview.create_window(
             "Mirage", url=str(WEB / "index.html"), js_api=self.bridge,
             width=1120, height=760, min_size=(900, 620), background_color="#120a1c",
