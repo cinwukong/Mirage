@@ -355,8 +355,14 @@ class LocalLLM:
             return ""
 
     def uses_gpu(self):
+        """Whether the engine runs on the graphics card: an NVIDIA (CUDA) or Vulkan build with a card to use."""
+        names = [p.name.lower() for p in ENGINE_DIR.glob("ggml-*")] if ENGINE_DIR.exists() else []
+        if any("cuda" in n for n in names):
+            return _driver_cuda() is not None
+        if any("vulkan" in n for n in names):
+            return True
         t = self.server_log_tail(20000)
-        return "CUDA" in t or "Vulkan" in t
+        return "CUDA" in t or "Vulkan" in t or "offloaded" in t and "layers to GPU" in t
 
     def chat(self, messages, tools=None, think=False, max_tokens=700, timeout=180):
         """One OpenAI-style chat request. Returns the assistant message dict."""

@@ -295,7 +295,10 @@ class Bridge:
         def work():
             a.push("progress", ["brainTest", "Asking…", "wait"])
             t0 = time.time()
-            reply = a.engine.brain.ask("Reply with one short friendly sentence saying you're ready.")
+            try:
+                reply = a.engine.brain.ask("Reply with one short friendly sentence saying you're ready.")
+            finally:
+                a.engine.set_status(a.engine.idle_status())
             ok = not any(w in reply.lower() for w in ("log in", "isn't set up", "problem", "add an anthropic", "couldn't"))
             a.push("progress", ["brainTest", f"{reply} ({time.time() - t0:.1f} s)" if ok else reply, "ok" if ok else "bad"])
         threading.Thread(target=work, daemon=True).start()
@@ -445,7 +448,7 @@ class App:
         key = lb.key()
         return {"state": lb.llm.state, "detail": lb.llm.detail, "model": key, "engine": lb.lb.engine_ready(),
                 "installed": lb.lb.installed(key), "download_mb": lb.lb.download_mb(key), "running": lb.llm.running(),
-                "gpu": lb.llm.uses_gpu() if lb.llm.running() else None,
+                "gpu": lb.llm.uses_gpu() if lb.lb.engine_ready() else None,
                 "models": [[k, m["name"], m["blurb"], lb.lb.model_ready(k), round((m["size"] + m["mmproj_size"]) / 1e9, 1)]
                            for k, m in lb.lb.MODELS.items()]}
 

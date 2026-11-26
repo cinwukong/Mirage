@@ -571,7 +571,7 @@ function localCtl() {
   if (L.state === "error") return [stateEl("localState", L.detail, "bad")];
   if (L.state === "starting") return [stateEl("localState", L.detail || "Starting…", "wait")];
   if (L.running) return [stateEl("localState", L.gpu === false ? "Running on the processor" : "Running on your graphics card", "ok")];
-  return [stateEl("localState", "Ready. It wakes up when you ask something.", "ok")];
+  return [stateEl("localState", L.gpu === false ? "Ready, on the processor. It wakes up when you ask something." : "Ready. It wakes up when you ask something.", "ok")];
 }
 function areaEl(key, placeholder) {
   const t = h("textarea", { placeholder, rows: 3, style: "width:340px" });
