@@ -94,7 +94,7 @@ END
     Step "Mirage's code"
     $app = Join-Path $out "app"
     New-Item -ItemType Directory $app | Out-Null
-    Get-ChildItem $root -File | Where-Object { $_.Extension -eq ".py" -or $_.Name -in @("requirements.txt", "version.txt", "README.md") } |
+    Get-ChildItem $root -File | Where-Object { $_.Extension -eq ".py" -or $_.Name -in @("requirements.txt", "version.txt", "README.md", "CHANGES.md") } |
         ForEach-Object { Copy-Item $_.FullName $app }
     Copy-Item -Recurse (Join-Path $root "web") (Join-Path $app "web")
     Copy-Item -Recurse (Join-Path $root "assets") (Join-Path $app "assets")

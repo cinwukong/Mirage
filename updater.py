@@ -88,18 +88,27 @@ def why_off() -> str:
 # --------------------------------------------------------------------------- #
 # GitHub
 # --------------------------------------------------------------------------- #
-def _get(url: str, accept="application/vnd.github+json", timeout=30, limit=None) -> bytes:
+def _get(url: str, accept="application/vnd.github+json", timeout=30, limit=None, on_bytes=None) -> bytes:
     """GET from GitHub. Uses the saved key if there is one; if GitHub rejects it, tries again without it (works
-    for public repositories). The key is never sent on to the server a download is redirected to."""
+    for public repositories). The key is never sent on to the server a download is redirected to.
+    on_bytes(bytes so far): called as the download comes in (for the progress bar)."""
     def fetch(with_key):
         req = urllib.request.Request(url, headers={"User-Agent": "Mirage-updater", "Accept": accept})
         if with_key:
             req.add_unredirected_header("Authorization", f"Bearer {TOKEN}")
+        parts, got = [], 0
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = r.read(limit + 1) if limit else r.read()
-        if limit and len(data) > limit:
-            raise UpdateError("A download was much bigger than it should be, so the update stopped.")
-        return data
+            while True:
+                block = r.read(64 * 1024)
+                if not block:
+                    break
+                parts.append(block)
+                got += len(block)
+                if limit and got > limit:
+                    raise UpdateError("A download was much bigger than it should be, so the update stopped.")
+                if on_bytes:
+                    on_bytes(got)
+        return b"".join(parts)
 
     if not TOKEN:
         return fetch(False)
@@ -120,13 +129,45 @@ def _asset(release: dict, name: str):
     return next((a for a in release.get("assets") or [] if a.get("name") == name), None)
 
 
-def _download_asset(asset: dict, limit: int) -> bytes:
+def _download_asset(asset: dict, limit: int, on_bytes=None) -> bytes:
     """A release file, through the API (works for private repositories with a key, and public ones without)."""
-    return _get(asset["url"], accept="application/octet-stream", timeout=120, limit=limit)
+    return _get(asset["url"], accept="application/octet-stream", timeout=120, limit=limit, on_bytes=on_bytes)
 
 
 def release_version(release: dict) -> str:
     return re.sub(r"^[vV]", "", str(release.get("tag_name") or "")).strip()
+
+
+# --------------------------------------------------------------------------- #
+# What's new (CHANGES.md: "## <version>" headings, each followed by "- " lines)
+# --------------------------------------------------------------------------- #
+def read_changes(text: str) -> list:
+    """[(version, [notes])] in the order CHANGES.md lists them (newest first)."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        m = re.match(r"^##\s+v?(\d+(?:\.\d+)*)\b", line)
+        if m:
+            out.append((m.group(1), []))
+        elif out and line.startswith(("- ", "* ")):
+            out[-1][1].append(line[2:].strip())
+    return [(v, notes) for v, notes in out if notes]
+
+
+def whats_new(text: str, seen: str, current: str) -> list:
+    """[(version, [notes])], newest first, for the versions after `seen` up to the one you have. Coming from a
+    version that didn't keep track (seen is ""), just this version's notes."""
+    now = version_tuple(current)
+    since = version_tuple(seen) if seen else None
+    return [(v, notes) for v, notes in read_changes(text)
+            if version_tuple(v) <= now and (version_tuple(v) > since if since else version_tuple(v) == now)]
+
+
+def changes_file() -> str:
+    try:
+        return (APP / "CHANGES.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -175,12 +216,13 @@ def read_manifest(data: bytes) -> dict:
 # --------------------------------------------------------------------------- #
 # Installing
 # --------------------------------------------------------------------------- #
-def apply(repo_name: str, progress=lambda m: None) -> list:
+def apply(repo_name: str, progress=lambda message, done=None: None) -> list:
     """Download, check and install the newest release. Returns the files that changed. Raises UpdateError
-    (or a network error) without having changed anything, except when putting app.old back also failed."""
+    (or a network error) without having changed anything, except when putting app.old back also failed.
+    progress(message, done): done is how far along it is, 0 to 1 (for the progress bar)."""
     if why_off():
         raise UpdateError(why_off())
-    progress("Checking the update…")
+    progress("Checking the update…", 0.03)
     rel = latest_release(repo_name)
     man = _asset(rel, MANIFEST)
     if not man:
@@ -194,20 +236,24 @@ def apply(repo_name: str, progress=lambda m: None) -> list:
     z = _asset(rel, m["file"])
     if not z:
         raise UpdateError("The release is missing its app file.")
-    progress("Downloading update…")
-    blob = _download_asset(z, m["size"])
+    progress("Downloading update…", 0.08)
+    size = m["size"]
+    blob = _download_asset(z, size, on_bytes=lambda got: progress(
+        f"Downloading update… {got / 1e6:.1f} of {size / 1e6:.1f} MB", 0.08 + 0.37 * min(1.0, got / size)))
     if len(blob) != m["size"] or hashlib.sha256(blob).hexdigest() != m["sha256"]:
         raise UpdateError("The download doesn't match its checksum, so it wasn't installed.")
-    progress("Checking the new version…")
+    progress("Checking the new version…", 0.5)
     root = unpack(blob)
     try:
         if (root / "version.txt").read_text(encoding="utf-8").strip() != m["version"]:
             raise UpdateError("The update's files don't match its version, so it wasn't installed.")
-        install_packages(root)
+        install_packages(root, progress)
+        progress("Making sure every part of the new version works…", 0.62)
         selftest(root)
-        progress("Installing update…")
+        progress("Installing update…", 0.9)
         changed = swap_in(root)
         mark_pending(current, m["version"])
+        progress("Installed.", 0.97)
     finally:
         shutil.rmtree(STAGE, ignore_errors=True)
     _log(f"Updated {current} -> {m['version']}: {', '.join(changed) or 'no file changes'}")
@@ -232,11 +278,12 @@ def unpack(blob: bytes) -> Path:
     raise UpdateError("The download doesn't look like Mirage, so it wasn't installed.")
 
 
-def install_packages(root: Path):
+def install_packages(root: Path, progress=lambda message, done=None: None):
     """Install the packages a new requirements.txt asks for, into Mirage's own Python."""
     new, old = root / "requirements.txt", APP / "requirements.txt"
     if not new.exists() or (old.exists() and new.read_bytes() == old.read_bytes()):
         return
+    progress("Installing new packages (this can take a few minutes)…", 0.55)
     r = subprocess.run(paths.pip("install", "--disable-pip-version-check", "-r", str(new)), capture_output=True,
                        text=True, creationflags=paths.NO_WINDOW, timeout=1800)
     if r.returncode != 0:

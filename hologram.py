@@ -54,7 +54,8 @@ class Hologram:
         self.appear_t = 0.0
         self.hide_at = None
         self.scale = 1.0
-        self.sub_text, self.sub_who, self.sub_until = "", "mirage", 0.0
+        self.sub_who, self.sub_until = "mirage", 0.0
+        self.captions = None     # captions.Captions, made in _place (it needs the font and the box width)
         self.scaling = 1.0
         self.win = None
         self._logo_src = None
@@ -88,7 +89,9 @@ class Hologram:
             except tk.TclError:
                 pass
         self.canvas = tk.Canvas(w, bg=KEY, highlightthickness=0, bd=0)
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(side="top", fill="x")
+        # the subtitles get their own strip under the animation, so lines scrolling out of it are cut off cleanly
+        self.cap = tk.Canvas(w, bg=KEY, highlightthickness=0, bd=0)
         self.win = w
         self._click_through_done = False
 
@@ -124,9 +127,19 @@ class Hologram:
         else:
             art_w = art_h = size
         w, h = art_w, art_h
+        cap_h = 0
         if cfg.get("subtitles_enabled", True):
+            import tkinter.font as tkfont
+            from captions import Captions, ROWS
             w = max(art_w, int(440 * scaling))
-            h = art_h + int(78 * scaling)
+            self.cap_font = tkfont.Font(root=self.root, family="Segoe UI" if sys.platform.startswith("win") else "Helvetica",
+                                        size=int(12 * scaling) or 12, weight="bold")
+            self.line_h = self.cap_font.metrics("linespace") + 1
+            cap_h = ROWS * self.line_h + int(10 * scaling)
+            width = w - int(24 * scaling)
+            if self.captions is None or self.captions.width != width:
+                self.captions = Captions(self.cap_font.measure, width)
+            h = art_h + cap_h
         margin = int(24 * scaling)
         taskbar = int(56 * scaling)
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
@@ -134,6 +147,12 @@ class Hologram:
         x = margin if "left" in corner else sw - w - margin
         y = margin if "top" in corner else sh - h - margin - taskbar
         self.win.geometry(f"{w}x{h}+{x}+{y}")
+        self.canvas.config(width=w, height=art_h)
+        if cap_h:
+            self.cap.config(width=w, height=cap_h)
+            self.cap.pack(side="top", fill="x")
+        else:
+            self.cap.pack_forget()
         self.size, self.w, self.h = size, art_w, art_h   # w/h = the animated part
         self.win_w, self.win_h = w, h
         self.ox = (w - art_w) / 2                          # centre the animation horizontally
@@ -175,17 +194,36 @@ class Hologram:
             # linger a moment (longer if a subtitle is still being read), then fade out
             self.hide_at = max(time.time() + 1.2, self.sub_until)
 
-    def set_subtitle(self, text, who="mirage"):
-        """Show a line of text under the hologram for long enough to read it."""
+    def set_subtitle(self, text, who="mirage", voiced=None):
+        """Show text under the hologram: a reply follows Mirage's voice sentence by sentence (or goes at reading pace
+        when replies are subtitles only), scrolling so nothing is cut off. voiced=False: text Mirage doesn't say."""
         cfg = self.get_cfg()
         if not cfg.get("hologram_enabled", True) or not cfg.get("subtitles_enabled", True) or not text:
             return
-        now = time.time()
-        read = 1.8 + 0.055 * len(text) if who == "mirage" else 1.2 + 0.03 * len(text)
-        self.sub_text, self.sub_who = text, who
-        self.sub_until = now + min(14.0, read)
         if not self.visible:
             self._show()
+        if self.captions is None:  # blocked (full screen) or not placed yet
+            return
+        if voiced is None:
+            voiced = who == "mirage" and cfg.get("speak_replies", True)
+        self.sub_who = who
+        self.captions.show(text, who, follow_voice=voiced, wpm=0.9 * float(cfg.get("voice_rate", 185) or 185),
+                           now=time.time())
+        self._keep_for_caption()
+
+    def caption_spoken(self, text, index):
+        if self.captions:
+            self.captions.spoken(text, index, now=time.time())
+            self._keep_for_caption()
+
+    def caption_started(self, text):
+        if self.captions:
+            self.captions.started(text, now=time.time())
+            self._keep_for_caption()
+
+    def _keep_for_caption(self):
+        """Stay up until the caption has been said and read."""
+        self.sub_until = self.captions.done_at
         if self.status not in ACTIVE:
             self.hide_at = self.sub_until
         elif self.hide_at is not None:
@@ -198,8 +236,9 @@ class Hologram:
         """Show briefly (used by the settings page)."""
         self._hide_now()
         self._show()
-        if self.get_cfg().get("subtitles_enabled", True):
-            self.sub_text, self.sub_who = "This is how my subtitles look.", "mirage"
+        if self.get_cfg().get("subtitles_enabled", True) and self.captions:
+            self.sub_who = "mirage"
+            self.captions.show("This is how my subtitles look.", now=time.time())
             self.sub_until = time.time() + seconds
         self.hide_at = time.time() + seconds
 
@@ -216,7 +255,9 @@ class Hologram:
     def _hide_now(self):
         self.visible = False
         self.hide_at = None
-        self.sub_text = ""
+        if self.captions:
+            self.captions.clear()
+            self.cap.delete("all")
         if self.win is not None:
             self.win.withdraw()
 
@@ -245,7 +286,8 @@ class Hologram:
                         self._draw_logo(now, k)
                     else:
                         self._draw(now, k)
-                    self._draw_subtitle(now)
+                    if self.captions and self.captions.tick(now):
+                        self._draw_caption()
         except tk.TclError:
             return
         self.root.after(33, self._tick)
@@ -305,24 +347,26 @@ class Hologram:
             h = H * (0.015 + 0.11 * lv * wob * (0.35 + 0.65 * edge))
             c.create_line(x, base_y - h, x, base_y + h, fill=color, width=bw, capstyle="round")
 
-    def _draw_subtitle(self, t):
-        if not self.sub_text or t > self.sub_until + 0.5:
+    def _draw_caption(self):
+        """The subtitle strip: the lines that have started, scrolled; the piece being said bright, older ones faded,
+        a line leaving the top fades out. Redrawn only when it changes."""
+        c = self.cap
+        c.delete("all")
+        if not self.captions:
             return
-        c = self.canvas
-        sc = self.scaling
-        font = ("Segoe UI" if sys.platform.startswith("win") else "Helvetica", int(12 * sc) or 12, "bold")
-        text = self.sub_text if len(self.sub_text) <= 220 else self.sub_text[:217] + "…"
-        if self.sub_who == "you":
-            text, fill = "You: " + text, "#cbd5e1"
-        else:
-            fill = "#f3e8ff"
-        x, y = self.win_w / 2, self.h + 4 * sc
-        width = self.win_w - 24 * sc
-        # dark outline so the text is readable on any background
-        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1), (-1, 1), (1, -1)):
-            c.create_text(x + dx, y + dy, text=text, width=width, anchor="n", justify="center",
-                          font=font, fill="#0b0b14")
-        c.create_text(x, y, text=text, width=width, anchor="n", justify="center", font=font, fill=fill)
+        sc, lh = self.scaling, self.line_h
+        full = "#cbd5e1" if self.sub_who == "you" else "#f3e8ff"
+        x, top = self.win_w / 2, int(5 * sc)
+        for pos, line, bright in self.captions.lines():
+            fade = bright * (min(1.0, 1.0 + pos) if pos < 0 else 1.0)  # leaving the top: fade it out
+            if fade <= 0.05:
+                continue
+            fill = _mix("#3b3350", full, fade)
+            y = top + pos * lh
+            # dark outline so the text is readable on any background
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1), (-1, 1), (1, -1)):
+                c.create_text(x + dx, y + dy, text=line, anchor="n", font=self.cap_font, fill="#0b0b14")
+            c.create_text(x, y, text=line, anchor="n", font=self.cap_font, fill=fill)
 
     def _draw(self, t, scale):
         c = self.canvas

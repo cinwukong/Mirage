@@ -669,20 +669,23 @@ class Speech:
             self._cache[key] = got
         return got
 
-    def speak(self, text, voice=DEFAULT_VOICE, speed=1.0, pitch=0, robot=0, volume=1.0, stop=None):
-        """Say text out loud; the next sentence is made while the current one plays. stop() -> True cuts it short."""
+    def speak(self, text, voice=DEFAULT_VOICE, speed=1.0, pitch=0, robot=0, volume=1.0, stop=None, on_piece=None):
+        """Say text out loud; the next sentence is made while the current one plays. stop() -> True cuts it short.
+        on_piece(i): called as piece i of split_sentences(text) starts playing (the subtitles follow it)."""
         import numpy as np
         try:
             import sounddevice as sd
         except Exception:
             sd = None
         playing = False
-        for chunk in split_sentences(text):
+        for i, chunk in enumerate(split_sentences(text)):
             if stop and stop():
                 break
             x, sr = self.line(chunk, voice, speed, pitch, robot)
             x = np.clip(x * max(0.0, min(1.0, volume)), -1, 1)
             if sd is None:
+                if on_piece:
+                    on_piece(i)
                 play(x, sr)
                 continue
             if playing:
@@ -690,6 +693,8 @@ class Speech:
             if stop and stop():
                 break
             self._played(x, sr)
+            if on_piece:
+                on_piece(i)
             sd.play(x, sr)
             playing = True
             if stop and stop():  # cut off while this was starting

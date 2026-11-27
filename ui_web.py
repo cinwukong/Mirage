@@ -123,7 +123,105 @@ class Bridge:
             "local": a.local_state(),
             "startup": get_startup(),
             "update_available": a.update_available,
+            "whats_new": a.whats_new_pending,
         }
+
+    # ---- what's new ----
+    def whats_new_seen(self):
+        self._app.whats_new_pending = []
+        self._app.engine.update_config({"seen_version": M.VERSION})
+
+    def get_whats_new(self):
+        """The notes for this version and the two before it (Settings, App, What's new)."""
+        import updater
+        mine = updater.version_tuple(M.VERSION)
+        return [[v, notes] for v, notes in updater.read_changes(updater.changes_file())
+                if updater.version_tuple(v) <= mine][:3]
+
+    # ---- diagnostics ----
+    def diagnostics(self):
+        """Everything the Diagnostics page shows: this PC, and how Mirage's parts are doing."""
+        import diagnostics
+        a = self._app
+        e = a.engine
+        cfg = e.cfg
+        sp, lb = a.speech_state(), a.local_state()
+        brain = cfg.get("brain", "local")
+        if brain == "local":
+            model = next((m[1] for m in lb.get("models", []) if m[0] == lb.get("model")), lb.get("model"))
+            if not lb.get("installed"):
+                brain_text = f"Mirage's own brain ({model}): not installed"
+            else:
+                where = "on the processor" if lb.get("gpu") is False else "on the graphics card"
+                brain_text = (f"Mirage's own brain ({model}): " + ("running " + where if lb.get("running") else
+                              f"ready, sleeping until you ask something ({where})") +
+                              (f". Last problem: {lb['detail']}" if lb.get("state") == "error" else ""))
+        elif brain == "claude_code":
+            c = a.claude_state()
+            brain_text = "Claude Code: " + ("logged in" if c["logged_in"] else "installed, not logged in" if c["installed"]
+                                            else "not installed")
+        elif brain == "api":
+            brain_text = "Claude with an API key: " + ("key added" if cfg.get("anthropic_api_key") else "no key yet")
+        else:
+            brain_text = "Off: only shortcuts work"
+        mic = cfg.get("input_device") or "the Windows default microphone"
+        mic_text = (f"{mic}: muted in Mirage" if e.mic_muted else f"{mic}: {e.error_detail}" if e.mic_error
+                    else f"{mic}: listening")
+        voice = {"mirage": "Mirage's own voice", "windows": "the Windows voice", "voicestudio": "VoiceStudio"}.get(
+            cfg.get("voice_engine"), cfg.get("voice_engine"))
+        if sp.get("installed"):
+            ears = {"ready": "ready", "loading": "loading…", "error": f"problem: {sp.get('detail')}"}.get(sp.get("state"),
+                                                                                                         sp.get("state"))
+            hearing = f"Mirage's own voice and hearing: {ears}"
+        else:
+            hearing = "Mirage's own voice and hearing: not installed (using the basic recognizer)"
+        return {"pc": diagnostics.system_info(M.DATA_DIR), "mic": mic_text, "hearing": hearing,
+                "voice": f"Speaking with {voice}", "brain": brain_text, "version": M.VERSION}
+
+    def diagnostic_report(self):
+        """The text for "Copy report": the facts, then the end of the log, without anything private."""
+        import diagnostics
+        d = self.diagnostics()
+        info = {"Mirage": d["version"], **d["pc"], "Microphone": d["mic"], "Hearing": d["hearing"],
+                "Voice": d["voice"], "Brain": d["brain"]}
+        try:
+            log = M.LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log = ""
+        return diagnostics.report(info, log)
+
+    def test_mic(self):
+        """Listen for four seconds and say how loud it was and what Mirage heard."""
+        a = self._app
+        e = a.engine
+
+        def work():
+            if e.mic_muted:
+                a.push("progress", ["micTest", "The microphone is muted in Mirage: unmute it first.", "bad"])
+                return
+            a.push("progress", ["micTest", "Listening for 4 seconds: say something…", "wait"])
+            samples = e.record(4.0)
+            if not samples:
+                a.push("progress", ["micTest", "No sound came in at all. Check the microphone is plugged in and "
+                                               "picked under Listening.", "bad"])
+                return
+            peak = max(abs(min(samples)), abs(max(samples)))
+            if peak < 0.02:
+                a.push("progress", ["micTest", "It's almost silent. Pick another microphone, or turn its volume up "
+                                               "in Windows' sound settings.", "bad"])
+                return
+            loud = "quiet but usable" if peak < 0.1 else "a good level" if peak < 0.9 else "very loud (it may distort)"
+            heard = ""
+            if e.speech.ready():
+                try:
+                    import numpy as np
+                    heard = e.speech.transcribe(np.asarray(samples, dtype=np.float32))
+                except Exception as ex:
+                    M.log(f"Microphone test: couldn't write it down: {ex}")
+            text = f"The sound came in at {loud}." + (f" I heard: “{heard}”" if heard else
+                                                      " I didn't make out any words." if e.speech.ready() else "")
+            a.push("progress", ["micTest", text, "ok"])
+        threading.Thread(target=work, daemon=True).start()
 
     def poll(self):
         return self._app.drain()
@@ -404,8 +502,9 @@ class Bridge:
         def work():
             import updater
             try:
-                updater.apply(updater.repo(a.engine.cfg), progress=lambda m: a.push("progress", ["updState", m, "wait"]))
-                a.push("progress", ["updState", "Updated. Restarting…", "ok"])
+                updater.apply(updater.repo(a.engine.cfg),
+                              progress=lambda m, done=None: a.push("progress", ["updState", m, "wait", done]))
+                a.push("progress", ["updState", "Updated. Restarting…", "ok", 1.0])
                 time.sleep(0.8)
                 a.restart()
             except Exception as e:
@@ -450,8 +549,25 @@ class App:
         self._hidden = start_hidden
         self.options = {"mics": [], "voices": [], "vaults": [], "vs": {"ok": False, "voices": []}}
         self.engine = M.Engine(on_event=self.on_engine_event)
+        self.whats_new_pending = self._whats_new()
         self.holo = hologram.HologramThread(lambda: self.engine.cfg)
         self.bridge = Bridge(self)
+
+    def _whats_new(self):
+        """[[version, notes]] to show once after an update; [] otherwise."""
+        cfg = self.engine.cfg
+        if cfg.get("seen_version") == M.VERSION:
+            return []
+        try:
+            import updater
+            notes = updater.whats_new(updater.changes_file(), cfg.get("seen_version") or "", M.VERSION) \
+                if cfg.get("setup_done", True) else []
+        except Exception as e:
+            M.log(f"What's new: {e}")
+            notes = []
+        if not notes:  # nothing to show (or a brand-new install): don't look again until the next version
+            self.engine.update_config({"seen_version": M.VERSION})
+        return [[v, n] for v, n in notes]
 
     # ---- config as the interface sees it ----
     def cfg_view(self):
@@ -532,10 +648,16 @@ class App:
             self.level = data
             self.holo.call("set_level", data)
             return
+        if kind == "speech_progress":  # the voice started saying piece data[1] of reply data[0]
+            self.holo.call("caption_spoken", data[0], data[1])
+            return
+        if kind == "speech_started":  # the voice started a whole reply and won't say where it is
+            self.holo.call("caption_started", data)
+            return
         if kind == "status":
             self.holo.call("set_status", data[0])
             if data[0] == "acting" and data[1]:
-                self.holo.call("set_subtitle", data[1], "mirage")  # how to stop it
+                self.holo.call("set_subtitle", data[1], "mirage", False)  # how to stop it (not said out loud)
         elif kind in ("heard", "reply", "system"):
             who = {"heard": "you", "reply": "mirage", "system": "sys"}[kind]
             self.messages.append({"who": who, "text": data, "at": datetime.now().strftime("%H:%M")})

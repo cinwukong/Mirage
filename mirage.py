@@ -113,7 +113,7 @@ migrate_from_app_folder()
 # Config
 # --------------------------------------------------------------------------- #
 # Only for a brand-new install: someone who already uses Mirage keeps what they had
-NEW_INSTALL = {"builtins_off": ["roblox"], "setup_done": False}
+NEW_INSTALL = {"builtins_off": ["roblox"], "setup_done": False, "seen_version": VERSION}  # no "what's new" on day one
 
 DEFAULT_CONFIG = {
     "wake_words": ["mirage", "mirages", "my rage", "mirror"],
@@ -174,6 +174,7 @@ DEFAULT_CONFIG = {
     "update_repo": "",             # "" = use updater.UPDATE_REPO
     "github_token": "",            # read-only key, only needed if the repository is private
     "check_updates_on_start": True,
+    "seen_version": "",            # the version whose "what's new" you've seen ("" = from before Mirage kept track)
     "websites": {
         "youtube": "https://www.youtube.com",
         "google": "https://www.google.com",
@@ -537,6 +538,7 @@ class Voice:
                     if want and want != current:
                         tts.setProperty("voice", want)
                         current = want
+                    self.engine.emit("speech_started", text)  # the subtitles go at speaking pace from here
                     tts.say(text)
                     tts.runAndWait()
                 except Exception as e:
@@ -570,6 +572,7 @@ class Voice:
                         self._vs_cache.clear()
                     self._vs_cache[key] = wav
             wav = wav_with_volume(wav, float(cfg.get("voice_volume", 1.0)))
+            self.engine.emit("speech_started", text)
             winsound.PlaySound(wav, winsound.SND_MEMORY)
             if self._vs_warned:
                 self._vs_warned = False
@@ -598,7 +601,7 @@ class Voice:
         try:
             voice, speed, pitch, robot = engine.voice_settings()
             sp.speak(text, voice, speed, pitch, robot, float(engine.cfg.get("voice_volume", 1.0)),
-                     stop=self.interrupt.is_set)
+                     stop=self.interrupt.is_set, on_piece=lambda i: engine.emit("speech_progress", (text, i)))
             self._lv_warned = False
             return True
         except Exception as e:
@@ -850,6 +853,7 @@ class Engine:
         self._restart_audio = threading.Event()
         self.cmd_q: "queue.Queue" = queue.Queue()
         self._wake_cache = (None, None)
+        self._taps = []                  # lists collecting what the microphone hears (the microphone test)
         import updater
         updater.TOKEN = (self.cfg.get("github_token") or "").strip()
         import skills
@@ -1283,6 +1287,21 @@ class Engine:
                 self.set_status("error", f"Microphone problem: {e}")
                 self._restart_audio.wait(5)
 
+    def _feed_taps(self, samples):
+        for tap in list(self._taps):
+            tap.extend(samples)
+
+    def record(self, seconds: float) -> list:
+        """What the microphone hears for a few seconds (16 kHz, -1..1), through the stream Mirage already listens
+        on. Empty if the microphone is muted or not working."""
+        tap = []
+        self._taps.append(tap)
+        try:
+            time.sleep(seconds)
+        finally:
+            self._taps.remove(tap)
+        return tap
+
     def barge_in_on(self):
         return bool(self.cfg.get("barge_in", True)) and self.cfg.get("voice_engine") == "mirage" and self.speech.ready()
 
@@ -1307,6 +1326,7 @@ class Engine:
                     listener.reset()
                     continue
                 x = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768
+                self._feed_taps(x)
                 self.emit("level", float(np.max(np.abs(x))) if len(x) else 0.0)
                 if echo.hears_voice(x, got_at):
                     self._heard_myself(f"the mic carries my voice, {echo.score:.0f}")
@@ -1468,6 +1488,8 @@ class Engine:
                 rec.Reset()
                 continue
             samples = array("h", data)
+            if self._taps:
+                self._feed_taps([s / 32768 for s in samples])
             self.emit("level", (max(max(samples), -min(samples)) / 32768) if samples else 0.0)
             if self.voice.speaking.is_set():
                 rec.Reset()  # don't listen to ourselves

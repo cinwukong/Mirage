@@ -36,6 +36,7 @@ async function boot() {
   renderConvo();
   show(S.start_page || "home");
   if (C().setup_done === false) openSetup();
+  else if (S.whats_new && S.whats_new.length) openNews(S.whats_new, true);
   poll();
   requestAnimationFrame(drawHolo);
 }
@@ -99,7 +100,7 @@ async function setCfg(changes, rerender = false) {
 function onEvent(kind, data) {
   switch (kind) {
     case "status": applyStatus(data[0], data[1]); break;
-    case "level": level = data; for (const m of $$("#levelMeter, #setupMeter")) m.style.width = Math.min(100, data * 400) + "%"; break;
+    case "level": level = data; for (const m of $$("#levelMeter, #setupMeter, #diagMeter")) m.style.width = Math.min(100, data * 400) + "%"; break;
     case "heard": addLine("you", data); break;
     case "reply": addLine("mirage", data); break;
     case "system": addLine("sys", data); break;
@@ -111,8 +112,11 @@ function onEvent(kind, data) {
     case "progress": {
       if (data[0] === "speechState" && S.speech) S.speech.detail = data[1];
       if (data[0] === "localState" && S.local) S.local.detail = data[1];
+      S.prog = S.prog || {};
+      S.prog[data[0]] = data;  // kept, so the page shows it again when you come back to it
       for (const el of $$("#setup [data-progress='" + data[0] + "']")) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
       const el = $("#" + data[0]); if (el) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
+      setBar(data[0], data);
     } break;
     case "refresh_settings": if (page === "settings") renderSettings(); break;
   }
@@ -540,8 +544,10 @@ const SECTIONS = [
     ] },
   { id: "app", name: "App", intro: "",
     rows: () => [
-      custom("Updates", "You have version " + S.version + ".", () => [stateEl("updState"), btn(S.update_available ? "Install " + S.update_available : "Check for updates",
-        () => S.update_available ? api().install_update() : api().check_updates(), "gold", null, "updBtn")]),
+      custom("Updates", "You have version " + S.version + ".", () => [h("div", { class: "upd" }, stateEl("updState"), barEl("updState")),
+        btn("What's new", () => api().get_whats_new().then(n => openNews(n, false))),
+        btn(S.update_available ? "Install " + S.update_available : "Check for updates",
+          () => S.update_available ? api().install_update() : api().check_updates(), "gold", null, "updBtn")]),
       custom("Start with Windows", "Mirage starts hidden in the tray when you log in.", () => [toggleEl(S.startup, v => api().set_startup(v).then(r => { S.startup = r; saved(); }))]),
       toggle("close_to_tray", "Keep running when closed", "Closing the window keeps Mirage listening in the tray."),
       C().github_token && text("github_token", "GitHub key", "Only needed if the Mirage repository is private.", "github_pat_…", true),
@@ -551,14 +557,70 @@ const SECTIONS = [
           () => [btn("Licenses", () => api().open_url("https://github.com/cinwukong/Mirage#credits"))]),
       custom("Quit Mirage", "Stops listening completely.", () => [btn("Quit", () => api().quit(), "danger")]),
     ] },
+  { id: "diag", name: "Diagnostics", intro: "How Mirage and this PC are doing. If something doesn't work, copy the report and paste it where you ask for help: what you said and your name are left out.",
+    rows: () => {
+      const d = S.diag;
+      if (!d) return [h("p", { class: "muted" }, "Checking…")];
+      return [
+        custom("Report for help", "This PC, Mirage's parts and the end of the log, without anything private.", () => [
+          btn("Copy report", copyReport, "gold"), btn("Open log", () => api().open_path("log")),
+          btn("↻", () => { S.diag = null; renderSettings(); }, "small", "Check again")]),
+        custom("Microphone", d.mic, () => [h("div", { class: "meter" }, h("i", { id: "diagMeter" }))]),
+        custom("Test the microphone", "Listens for four seconds, then says how loud it was and what it heard.", () => [
+          stateEl("micTest"), btn("Test", () => api().test_mic())]),
+        row("Hearing and voice", d.hearing + ". " + d.voice + "."),
+        custom("Brain", d.brain + ".", () => [stateEl("brainTest"), btn("Test brain", () => api().test_brain())]),
+        h("div", { class: "facts" }, h("h3", {}, "This PC"),
+          h("dl", {}, Object.entries(d.pc).map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]).flat())),
+      ];
+    } },
 ];
+
+/* Diagnostics: fetched when the page opens, and again with ↻ */
+let diagLoading = false;
+function loadDiag() {
+  if (diagLoading) return;
+  diagLoading = true;
+  api().diagnostics().then(d => { S.diag = d; }).catch(() => { S.diag = null; toast("Couldn't check everything."); })
+    .finally(() => { diagLoading = false; if (page === "settings" && settingsSection === "diag") renderSettings(); });
+}
+async function copyReport() {
+  const text = await api().diagnostic_report();
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied. Paste it where you're asking for help.", 3500);
+  } catch (e) {  // no clipboard: show the text so it can be copied by hand
+    const t = h("textarea", { class: "report", rows: 10, readonly: true, "aria-label": "Diagnostic report" });
+    t.value = text;
+    $("#settingsPanel").append(t);
+    t.focus(); t.select();
+    toast("Press Ctrl+C to copy the report.", 4000);
+  }
+}
+
+/* What's new: shown once after an update, and from Settings, App */
+function openNews(notes, afterUpdate) {
+  const box = $("#news");
+  box.textContent = "";
+  const close = () => { box.hidden = true; if (afterUpdate) api().whats_new_seen(); };
+  const sections = (notes || []).map(([v, items]) => h("section", {},
+    h("h2", {}, "Mirage " + v), h("ul", {}, items.map(t => h("li", {}, t)))));
+  box.append(h("div", { class: "setup-card news" },
+    h("h1", { id: "newsTitle" }, afterUpdate ? "What's new" : "Recent changes"),
+    sections.length ? sections : h("p", {}, "No notes for this version."),
+    h("div", { class: "setup-actions" }, h("span"), btn("Got it", close, "gold"))));
+  box.onkeydown = e => { if (e.key === "Escape") close(); };
+  box.hidden = false;
+  setTimeout(() => { const b = box.querySelector(".btn.gold"); if (b) b.focus(); }, 30);
+}
 
 function renderSettings() {
   const nav = $("#settingsNav");
   nav.textContent = "";
   for (const s of SECTIONS) nav.append(h("button", { class: s.id === settingsSection ? "on" : "",
-    onclick: () => { settingsSection = s.id; renderSettings(); } }, s.name));
+    onclick: () => { settingsSection = s.id; if (s.id === "diag") S.diag = null; renderSettings(); } }, s.name));
   const sec = SECTIONS.find(s => s.id === settingsSection);
+  if (sec.id === "diag" && !S.diag) loadDiag();
   const p = $("#settingsPanel");
   const scroll = p.scrollTop;
   p.textContent = "";
@@ -590,7 +652,23 @@ function sureBtn(label, sure, fn) {
 function btn(label, fn, kind = "", title = null, id = null) {
   return h("button", { class: "btn " + kind, onclick: fn, title, id, "aria-label": title || label }, label);
 }
-function stateEl(id, text = "", cls = "") { return h("span", { class: "state " + cls, id }, text); }
+function stateEl(id, text = "", cls = "") {
+  const last = !text && S.prog && S.prog[id];  // the latest progress message, if any came in
+  return h("span", { class: "state " + (last ? last[2] || "wait" : cls), id, role: "status" }, last ? last[1] : text);
+}
+/* a progress bar for a stateEl: shown while there's a fraction (0-1), hidden when it's done or failed */
+function barEl(id) {
+  const b = h("div", { class: "pbar", id: id + "Bar", role: "progressbar", "aria-label": "Progress", "aria-valuemin": "0", "aria-valuemax": "100" }, h("i"));
+  setBar(id, S.prog && S.prog[id], b);
+  return b;
+}
+function setBar(id, data, el = null) {
+  const b = el || $("#" + id + "Bar");
+  if (!b) return;
+  const done = data && typeof data[3] === "number" ? Math.max(0, Math.min(1, data[3])) : null;
+  b.hidden = done === null || data[2] === "bad";
+  if (done !== null) { b.firstChild.style.width = Math.round(done * 100) + "%"; b.setAttribute("aria-valuenow", String(Math.round(done * 100))); }
+}
 function toggleEl(on, fn) {
   const t = h("button", { class: "toggle" + (on ? " on" : ""), role: "switch", "aria-checked": on ? "true" : "false" });
   t.addEventListener("click", () => { const v = !t.classList.contains("on"); t.classList.toggle("on", v); t.setAttribute("aria-checked", v); fn(v); });
