@@ -1,0 +1,95 @@
+**********************
+PowerShell transcript start
+Start time: 20261127233247
+Username: runnervmop6rv\runneradmin
+RunAs User: runnervmop6rv\runneradmin
+Configuration Name: 
+Machine: runnervmop6rv (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -command . 'D:\a\_temp\bf654795-4d7b-4623-ac8c-4943f13f235a.ps1'
+Process ID: 7400
+PSVersion: 7.6.10
+PSEdition: Core
+GitCommitId: 7.6.10
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.4
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+Mirage 3.1.0, Python from C:\hostedtoolcache\windows\Python\3.13.17\x64
+
+==== Private Python ====
+  LICENSE.txt
+  python.exe
+  python3.dll
+  python313.dll
+  pythonw.exe
+  vcruntime140_1.dll
+  vcruntime140.dll
+
+
+==== Packages ====
+
+
+
+
+
+==== Mirage.exe ====
+
+
+
+FileDescription : Mirage
+ProductName     : Mirage
+FileVersion     : 3.1.0
+
+
+==== Mirage's code ====
+
+==== Self-test ====
+ok   paths
+ok   mirage
+ok   skills
+ok   speech
+ok   local_brain
+ok   brains
+ok   recall
+ok   presence
+ok   pc
+ok   spotify
+ok   hologram
+ok   ui_web
+ok   apps
+ok   download
+ok   updater
+ok   captions
+ok   diagnostics
+ok   memories
+ok   shortcuts
+ok   webview
+ok   sounddevice
+ok   numpy
+ok   sherpa_onnx
+ok   PIL
+ok   pystray
+ok   vosk
+ok   pyttsx3
+ok   anthropic
+ok   tkinter
+ok   comtypes
+ok   comtypes.client
+python 3.13.17 at D:\a\Mirage\Mirage\build\Mirage\Mirage.exe; bundled=True
+App folder: 248 MB
+
+==== Installer ====
+
+
+Name                   MB
+----                   --
+Mirage-Setup-3.1.0.exe 53.4
+
+BUILD OK
+**********************
+PowerShell transcript end
+End time: 20261127233449
+**********************
