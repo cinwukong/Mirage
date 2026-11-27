@@ -114,8 +114,8 @@ function onEvent(kind, data) {
       if (data[0] === "localState" && S.local) S.local.detail = data[1];
       S.prog = S.prog || {};
       S.prog[data[0]] = data;  // kept, so the page shows it again when you come back to it
-      for (const el of $$("#setup [data-progress='" + data[0] + "']")) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
-      const el = $("#" + data[0]); if (el) { el.textContent = data[1]; el.className = "state " + (data[2] || "wait"); }
+      for (const el of $$("#setup [data-progress='" + data[0] + "']")) setState(el, data[1], data[2]);
+      const el = $("#" + data[0]); if (el) setState(el, data[1], data[2]);
       setBar(data[0], data);
     } break;
     case "refresh_settings": if (page === "settings") renderSettings(); break;
@@ -449,7 +449,7 @@ const SECTIONS = [
         [["haiku", "Fast"], ["sonnet", "Balanced"], ["opus", "Smartest"]]),
       C().brain === "claude_code" && toggle("claude_power", "Let Claude run commands and edit files", "Lets Claude run commands and read, create or edit any file on this PC without asking. Only turn this on if you trust everything it reads: a web page could tell it to run something. When off, Claude can still search the web and use Mirage's skills."),
       C().brain === "api" && text("anthropic_api_key", "Anthropic API key", "Pay-per-use. Get one at console.anthropic.com.", "sk-ant-…", true),
-      C().brain !== "off" && custom("Try it", "Sends a short test question.", () => [btn("Test brain", () => api().test_brain()), stateEl("brainTest")]),
+      C().brain !== "off" && testRow("Try it", "Sends a short test question.", "brainTest", btn("Test brain", () => api().test_brain())),
     ] },
   { id: "listening", name: "Listening", intro: "How Mirage hears you.",
     rows: () => [
@@ -538,10 +538,14 @@ const SECTIONS = [
     ] },
   { id: "app", name: "App", intro: "",
     rows: () => [
-      custom("Updates", "You have version " + S.version + ".", () => [h("div", { class: "upd" }, stateEl("updState"), barEl("updState")),
-        btn("What's new", () => api().get_whats_new().then(n => openNews(n, false))),
-        btn(S.update_available ? "Install " + S.update_available : "Check for updates",
-          () => S.update_available ? api().install_update() : api().check_updates(), "gold", null, "updBtn")]),
+      (() => {
+        const r = testRow("Updates", "You have version " + S.version + ".", "updState",
+          btn("What's new", () => api().get_whats_new().then(n => openNews(n, false))),
+          btn(S.update_available ? "Install " + S.update_available : "Check for updates",
+            () => S.update_available ? api().install_update() : api().check_updates(), "gold", null, "updBtn"));
+        r.querySelector(".lbl").append(barEl("updState"));  // the progress bar sits under the update's status
+        return r;
+      })(),
       custom("Start with Windows", "Mirage starts hidden in the tray when you log in.", () => [toggleEl(S.startup, v => api().set_startup(v).then(r => { S.startup = r; saved(); }))]),
       toggle("close_to_tray", "Keep running when closed", "Closing the window keeps Mirage listening in the tray."),
       C().github_token && text("github_token", "GitHub key", "Only needed if the Mirage repository is private.", "github_pat_…", true),
@@ -560,10 +564,10 @@ const SECTIONS = [
           btn("Copy report", copyReport, "gold"), btn("Open log", () => api().open_path("log")),
           btn("↻", () => { S.diag = null; renderSettings(); }, "small", "Check again")]),
         custom("Microphone", d.mic, () => [h("div", { class: "meter" }, h("i", { id: "diagMeter" }))]),
-        custom("Test the microphone", "Listens for four seconds, then says how loud it was and what it heard.", () => [
-          stateEl("micTest"), btn("Test", () => api().test_mic())]),
+        testRow("Test the microphone", "Listens for four seconds, then says how loud it was and what it heard.", "micTest",
+          btn("Test", () => api().test_mic())),
         row("Hearing and voice", d.hearing + ". " + d.voice + "."),
-        custom("Brain", d.brain + ".", () => [stateEl("brainTest"), btn("Test brain", () => api().test_brain())]),
+        testRow("Brain", d.brain + ".", "brainTest", btn("Test brain", () => api().test_brain())),
         h("div", { class: "facts" }, h("h3", {}, "This PC"),
           h("dl", {}, Object.entries(d.pc).map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]).flat())),
       ];
@@ -633,6 +637,16 @@ function row(label, desc, ...ctl) {
   return h("div", { class: "row" }, h("div", { class: "lbl" }, label ? h("b", {}, label) : null, desc ? h("small", {}, desc) : null),
     h("div", { class: "ctl" }, ...ctl));
 }
+/* a row for a test: its answer (often a sentence or two) shows in a box under the description, across the row,
+   instead of being squeezed in next to the button */
+function testRow(label, desc, id, ...ctl) {
+  const r = row(label, desc, ...ctl);
+  r.classList.add("test");
+  const result = stateEl(id);
+  result.classList.add("result");
+  r.querySelector(".lbl").append(result);
+  return r;
+}
 function sureBtn(label, sure, fn) {
   // two clicks for things that can't be undone
   let armed = null;
@@ -649,6 +663,12 @@ function btn(label, fn, kind = "", title = null, id = null) {
 function stateEl(id, text = "", cls = "") {
   const last = !text && S.prog && S.prog[id];  // the latest progress message, if any came in
   return h("span", { class: "state " + (last ? last[2] || "wait" : cls), id, role: "status" }, last ? last[1] : text);
+}
+/* new text and colour for a stateEl, keeping its other classes (a test's result box) */
+function setState(el, text, how) {
+  el.textContent = text;
+  el.classList.remove("ok", "bad", "wait");
+  el.classList.add("state", how || "wait");
 }
 /* a progress bar for a stateEl: shown while there's a fraction (0-1), hidden when it's done or failed */
 function barEl(id) {

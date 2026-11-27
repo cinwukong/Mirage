@@ -3,6 +3,9 @@
 Mirage shows the notes for a new version once, after it updates. Each version is a "## <version>" heading followed by
 "- " lines, newest first.
 
+## 3.0.4
+- Test results (the microphone test, testing the brain, update progress) now show in a box under the setting, instead of squeezing the setting's name into a narrow column.
+
 ## 3.0.3
 - What I remember about you and your to-do list now live inside Mirage, on the Memory page, instead of in notes. I brought over what was already in your notes; the notes themselves are left as they were.
 - Obsidian is no longer used: the notes-folder setting, "Open in Obsidian", the daily log notes and the link tools are gone. Your chat history still lets me look back at what we said.

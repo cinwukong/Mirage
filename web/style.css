@@ -231,13 +231,13 @@ li.done .t { color: var(--muted); text-decoration: line-through; }
 .panel h2 { font: 400 26px/1.2 var(--display); margin: 2px 0 4px; }
 .panel .intro { color: var(--muted); margin: 0 0 14px; max-width: 64ch; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; border-bottom: 1px solid rgba(183, 148, 255, .08); max-width: 860px; }
-.row .lbl { min-width: 0; }
+.row .lbl { flex: 1 1 auto; min-width: 220px; }  /* the label keeps its room, whatever the controls hold */
 .row .lbl b { font-weight: 500; display: block; }
 .row .lbl small { color: var(--muted); font-size: 13px; display: block; max-width: 52ch; }
-.row .ctl { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.row .ctl { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; max-width: 60%; flex-wrap: wrap; justify-content: flex-end; }
 .row .ctl .val { color: var(--muted); font-size: 13px; min-width: 44px; text-align: right; }
 .note { margin: 14px 0 0; padding: 12px 14px; border-radius: var(--r-s); background: rgba(217, 169, 63, .07); border-left: 2px solid var(--gold); max-width: 860px; color: #e9dcc0; font-size: 14px; }
-.state { font-size: 13.5px; }
+.state { font-size: 13.5px; overflow-wrap: anywhere; }
 .state.ok { color: var(--jade); }
 .state.bad { color: var(--cinnabar); }
 .state.wait { color: var(--gold-hi); }
@@ -339,3 +339,13 @@ textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(217, 169,
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
 textarea.report { margin-top: 14px; max-width: 860px; font: 12px/1.4 Consolas, monospace; }
+
+/* 3.0.4: a test's answer, in a box under the row's description */
+.state.result { display: block; margin-top: 10px; padding: 9px 12px; border-radius: var(--r-s); max-width: 62ch;
+  line-height: 1.45; background: rgba(183, 148, 255, .06); border-left: 2px solid currentColor; }
+.state.result:empty { display: none; }
+.row.test { align-items: flex-start; }
+.row .lbl .pbar { margin-top: 8px; width: min(320px, 100%); }  /* the button lines up with the title, not the middle of the answer */
+.state.result.ok { background: rgba(95, 212, 160, .08); }
+.state.result.bad { background: rgba(226, 87, 76, .09); }
+.state.result.wait { background: rgba(242, 209, 126, .07); }
