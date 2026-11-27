@@ -1,0 +1,158 @@
+"""Mirage's own memory (memories.Memories): facts and to-dos kept in Mirage's data folder, and the one-time import
+of the notes older versions wrote as markdown."""
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from memories import Memories  # noqa: E402
+
+OLD_MEMORY = """# Mirage memory
+Things Mirage remembers about you. Lines tagged #noticed it picked up from your conversations. Part of [[Mirage]].
+
+- 2026-11-26 20:30 — The user wants to be called Luca · [[Me]]
+- 2026-11-26 21:02 — my favourite colour is purple · [[Me]]
+- 2026-11-26 21:40 — [[Skyline]] is a city-building game the user is making · [[Skyline]] #noticed
+- 2026-11-26 22:01 — Emma is the [[Me|user's]] sister · [[Emma]] #noticed
+"""
+OLD_TODO = """# To-do
+
+Part of [[Mirage]].
+
+- [ ] buy milk
+- [x] call the dentist
+- [ ] finish the [[Skyline]] menu
+"""
+
+
+class Facts(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.m = Memories(self.dir / "memory.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_what_you_tell_it_is_remembered_and_filed_under_you(self):
+        self.assertTrue(self.m.remember("my favourite colour is purple"))
+        f = self.m.facts()
+        self.assertEqual([x["text"] for x in f], ["my favourite colour is purple"])
+        self.assertEqual(f[0]["topic"], "Me")
+        self.assertEqual([x["text"] for x in self.m.me_facts()], ["my favourite colour is purple"])
+
+    def test_it_never_keeps_secrets(self):
+        self.assertFalse(self.m.remember("my bank password is hunter2"))
+        self.assertEqual(self.m.facts(), [])
+
+    def test_saying_it_twice_keeps_it_once(self):
+        self.m.remember("my dog is called Bruno")
+        self.m.remember("My dog is called Bruno.")
+        self.assertEqual(len(self.m.facts()), 1)
+
+    def test_forgetting_by_words_and_by_the_list(self):
+        self.m.remember("my favourite colour is purple")
+        self.m.remember("my dog is called Bruno")
+        self.assertEqual(self.m.forget("colour"), 1)
+        self.assertEqual([x["text"] for x in self.m.facts()], ["my dog is called Bruno"])
+        self.assertTrue(self.m.delete_fact(self.m.facts()[0]["id"]))
+        self.assertEqual(self.m.facts(), [])
+
+    def test_a_correction_replaces_the_old_fact(self):
+        self.m.remember("The user's favourite colour is purple", noticed=True)
+        old = self.m.find_fact("favourite colour purple", 0.5)
+        self.m.replace_fact(old["id"], "The user's favourite colour is green", noticed=True)
+        self.assertEqual([x["text"] for x in self.m.facts()], ["The user's favourite colour is green"])
+        self.assertTrue(self.m.facts()[0]["noticed"])
+
+    def test_facts_that_share_words_with_a_question_come_up(self):
+        self.m.remember("my dog is called Bruno")
+        self.m.remember("my favourite colour is purple")
+        rel = self.m.relevant_facts("what is my dog called")
+        self.assertEqual([x["text"] for x in rel], ["my dog is called Bruno"])
+
+    def test_it_is_still_there_after_a_restart(self):
+        self.m.remember("my dog is called Bruno")
+        self.m.add_todo("buy milk")
+        again = Memories(self.dir / "memory.db")
+        self.assertEqual([x["text"] for x in again.facts()], ["my dog is called Bruno"])
+        self.assertEqual(again.todos(), ["buy milk"])
+
+
+class Todos(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.m = Memories(self.dir / "memory.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_adding_checking_off_and_deleting(self):
+        self.m.add_todo("buy milk")
+        self.m.add_todo("call the dentist")
+        self.assertEqual(self.m.complete_todo("dentist"), "call the dentist")
+        self.assertEqual(self.m.todos(), ["buy milk"])
+        self.assertEqual(self.m.todos(done=True), ["call the dentist"])
+        entries = {text: (i, done) for i, text, done in self.m.todo_entries()}
+        self.m.toggle_todo(entries["call the dentist"][0])
+        self.assertEqual(sorted(self.m.todos()), ["buy milk", "call the dentist"])
+        self.m.delete_todo(entries["buy milk"][0])
+        self.assertEqual(self.m.todos(), ["call the dentist"])
+
+    def test_checking_off_something_not_on_the_list(self):
+        self.m.add_todo("buy milk")
+        self.assertIsNone(self.m.complete_todo("walk the cat"))
+
+    def test_search_finds_memories_and_todos(self):
+        self.m.remember("my dog is called Bruno")
+        self.m.add_todo("take Bruno to the vet")
+        self.assertEqual(sorted(src for src, text in self.m.search("bruno")), ["Memory", "To-do"])
+
+
+class ImportOldNotes(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.notes = self.dir / "Documents" / "Mirage" / "Mirage"
+        self.notes.mkdir(parents=True)
+        (self.notes / "Memory.md").write_text(OLD_MEMORY, encoding="utf-8")
+        (self.notes / "To-do.md").write_text(OLD_TODO, encoding="utf-8")
+        (self.notes / "Topics").mkdir()
+        (self.notes / "Topics" / "Me.md").write_text("- 2026-11-26 21:02 — my favourite colour is purple (from [[Memory]])\n",
+                                                     encoding="utf-8")
+        self.m = Memories(self.dir / "memory.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_memories_come_across_as_plain_text_with_topic_time_and_noticed(self):
+        self.assertEqual(self.m.import_notes([self.notes]), (4, 3))
+        f = {x["text"]: x for x in self.m.facts()}
+        self.assertEqual(list(f), ["The user wants to be called Luca", "my favourite colour is purple",
+                                   "Skyline is a city-building game the user is making", "Emma is the user's sister"])
+        self.assertEqual(f["Emma is the user's sister"]["topic"], "Emma")
+        self.assertTrue(f["Emma is the user's sister"]["noticed"])
+        self.assertFalse(f["my favourite colour is purple"]["noticed"])
+        self.assertEqual(f["The user wants to be called Luca"]["when"], "2026-11-26 20:30")
+
+    def test_todos_come_across_with_whether_they_are_done(self):
+        self.m.import_notes([self.notes])
+        self.assertEqual(self.m.todos(), ["buy milk", "finish the Skyline menu"])
+        self.assertEqual(self.m.todos(done=True), ["call the dentist"])
+
+    def test_it_only_happens_once(self):
+        self.m.import_notes([self.notes])
+        self.assertEqual(self.m.import_notes([self.notes]), (0, 0))
+        self.assertEqual(len(self.m.facts()), 4)
+
+    def test_the_notes_are_left_where_they_are(self):
+        self.m.import_notes([self.notes])
+        self.assertTrue((self.notes / "Memory.md").exists())
+
+    def test_no_old_notes_is_fine(self):
+        fresh = Memories(self.dir / "fresh.db")
+        self.assertEqual(fresh.import_notes([self.dir / "nowhere"]), (0, 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

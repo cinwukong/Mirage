@@ -88,20 +88,7 @@ def migrate_from_app_folder():
                 moved.append(name)
             except Exception as e:
                 log(f"Couldn't move {name} to {DATA_DIR}: {e}")
-    old_notes = BASE_DIR / "memory"
-    if old_notes.is_dir() and any(old_notes.rglob("*.md")):
-        try:
-            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
-            if not (cfg.get("vault_path") or "").strip():
-                if not paths.NOTES.exists():
-                    paths.NOTES.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(old_notes), str(paths.NOTES))
-                    moved.append(f"notes (now in {paths.NOTES})")
-                else:  # Documents\Mirage is taken: keep using the old folder
-                    cfg["vault_path"] = str(old_notes)
-                    CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        except Exception as e:
-            log(f"Couldn't move the notes folder: {e}")
+    # notes from before 3.0 (a "memory" folder here) are brought into Mirage's memory by Engine._import_old_notes
     if moved:
         log(f"Moved {', '.join(moved)} to {DATA_DIR}.")
 
@@ -152,8 +139,6 @@ DEFAULT_CONFIG = {
     "hologram_style": "logo",            # "logo" (purple headband) or "orb"
     "subtitles_enabled": True,           # show Mirage's replies as text under the hologram
     "subtitles_show_you": False,         # also show what you said
-    "vault_path": "",                    # Obsidian vault folder ("" = Mirage's own memory folder)
-    "daily_log": False,                  # write a daily log note of what you and Mirage said
     "weather_city": "",
     "weather_location": None,            # filled in automatically from weather_city
     "music_service": "youtube",          # what "play ..." uses: youtube or spotify
@@ -858,12 +843,9 @@ class Engine:
         updater.TOKEN = (self.cfg.get("github_token") or "").strip()
         import skills
         self.skills = skills
-        try:
-            if skills.fix_vault_setting(self.cfg, log):
-                save_config(self.cfg)
-        except Exception as e:
-            log(f"Couldn't repair the vault setting: {e}")
-        self.memory = skills.Memory(lambda: self.cfg)
+        import memories
+        self.memory = memories.Memories(DATA_DIR / "memory.db")
+        self._import_old_notes()
         import recall
         import presence
         self.recall = recall
@@ -890,6 +872,27 @@ class Engine:
         import brains
         self.brains = {"local": brains.LocalBrain(self), "claude_code": brains.ClaudeCodeBrain(self),
                        "api": brains.ApiBrain(self), "off": brains.OffBrain()}
+
+    def _import_old_notes(self):
+        """Older versions kept memories and to-dos as markdown notes. Bring them into Mirage's memory, once; the
+        notes are left where they are. Looked for: the Obsidian vault you picked, Documents\\Mirage, and the
+        "memory" folder Mirage used before 3.0."""
+        folders = []
+        vault = (self.cfg.get("vault_path") or "").strip()
+        if vault:
+            p = Path(vault)
+            p = p.parent if p.name == ".obsidian" else p
+            folders += [p / "Mirage", p]
+        folders += [paths.NOTES / "Mirage", BASE_DIR / "memory" / "Mirage", BASE_DIR / "memory"]
+        try:
+            facts, todos = self.memory.import_notes(folders)
+        except Exception as e:
+            log(f"Couldn't bring in the old notes: {e}")
+            return
+        if facts or todos:
+            log(f"Brought {facts} memories and {todos} to-dos from your old notes into Mirage's memory.")
+            self.emit("system", f"I moved what I remember ({facts}) and your to-do list ({todos}) from your notes into "
+                                "my own memory. The old notes are still there if you want them.")
 
     # ---- events / status ----
     @property
@@ -1217,7 +1220,6 @@ class Engine:
             self._last_reply = None
             try:
                 self.handle(text)
-                self.memory.log_exchange(text, self._last_reply or "")
                 if self.chats and self.cfg.get("chat_history", True):
                     self.chats.add(text, self._last_reply or "")
             except Exception as e:
@@ -1745,9 +1747,9 @@ class Engine:
                     return say(self.brain.ask(text))
                 hits = mem.search(m.group(1), 3)
                 if not hits:
-                    return say(f"I couldn't find anything about {m.group(1)} in your notes.")
-                parts = [sk.clean_md(line) for note, line in hits[:2]]
-                return say("From your notes: " + ". ".join(p.rstrip(".") for p in parts)[:320] + ".")
+                    return say(f"I don't remember anything about {m.group(1)}.")
+                parts = [sk.spoken_fact(text) for source, text in hits[:2]]
+                return say("Here's what I have: " + ". ".join(p.rstrip(".") for p in parts)[:320] + ".")
 
         # ---- to-do list ----
         if on("todos"):

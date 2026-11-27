@@ -2,9 +2,9 @@
 Where Mirage keeps things, and how it runs Python.
 
 - APP_DIR: Mirage's code (in the installed app: <install folder>\\app).
-- DATA: your settings, reminders, log, downloaded voice and brain: %LOCALAPPDATA%\\Mirage. Kept apart from the code,
-  so updating or reinstalling Mirage never touches them.
-- NOTES: where Mirage writes notes when you haven't picked an Obsidian vault: Documents\\Mirage.
+- DATA: your settings, memory, to-dos, reminders, log, downloaded voice and brain: %LOCALAPPDATA%\\Mirage. Kept apart
+  from the code, so updating or reinstalling Mirage never touches them.
+- NOTES: Documents\\Mirage, where versions before 3.0.3 wrote memories and to-dos as notes (brought in once).
 - BUNDLED: running in the installed app, with its own private Python (Mirage.exe), rather than a Python you
   installed yourself.
 """

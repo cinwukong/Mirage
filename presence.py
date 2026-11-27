@@ -6,7 +6,6 @@ Knowing when to speak up.
 - Nudges: Mirage speaking up on its own, rarely and only at a good moment (you're at the PC, not in a game,
   not in quiet hours, Mirage isn't busy):
     * dates in what Mirage remembers ("Emma's birthday is on 3 March"): the day before and on the day
-    * tasks with a due date in your notes (Obsidian Tasks style "📅 2026-12-01" or "due 2026-12-01")
     * once a day in the afternoon, if your to-do list has things on it
     * optional: a break after a long stretch at the PC
   Each nudge is said once. Your own reminders and timers aren't nudges: they always come through.
@@ -97,7 +96,7 @@ def in_quiet_hours(cfg, now=None) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Dates in what Mirage remembers, and due dates in notes
+# Dates in what Mirage remembers
 # --------------------------------------------------------------------------- #
 MONTHS = {m: i + 1 for i, m in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
                                          "september", "october", "november", "december"])}
@@ -166,25 +165,6 @@ def next_occurrence(d: date, yearly: bool, today: date):
     return n
 
 
-TASK_DUE = re.compile(r"^\s*[-*] \[ \]\s+(.+?)\s*(?:📅|🗓️?|\bdue:?\s*|\(@)\s*(\d{4}-\d{2}-\d{2})\)?")
-
-
-def due_tasks(lines):
-    """[(task text, due date)] from note lines like "- [ ] hand in essay 📅 2026-12-01"."""
-    out = []
-    for line in lines:
-        m = TASK_DUE.match(line)
-        if m:
-            try:
-                d = datetime.strptime(m.group(2), "%Y-%m-%d").date()
-            except ValueError:
-                continue
-            text = re.sub(r"[⏫🔼🔽⏬🔺]|#\S+|\[\[([^\]|]+)\|?([^\]]*)\]\]", lambda x: (x.group(2) or x.group(1) or "") if x.group(0).startswith("[[") else "",
-                          m.group(1)).strip(" -")
-            out.append((text, d))
-    return out
-
-
 # --------------------------------------------------------------------------- #
 # Nudges
 # --------------------------------------------------------------------------- #
@@ -250,21 +230,9 @@ class Nudger:
             if spoken.startswith(("You ", "Your ")):
                 spoken = spoken[0].lower() + spoken[1:]
             if d == today:
-                out.append((f"fact:{f['line'][:80]}:{d}:today", f"Don't forget, it's today: {spoken}."))
+                out.append((f"fact:{f['id']}:{d}:today", f"Don't forget, it's today: {spoken}."))
             elif d == today + timedelta(days=1):
-                out.append((f"fact:{f['line'][:80]}:{d}:tomorrow", f"Heads up for tomorrow: {spoken}."))
-        # tasks with due dates in notes
-        try:
-            lines = [line for note, line, words in self.e.memory._build_index() if "[ ]" in line]
-        except Exception:
-            lines = []
-        for task, d in due_tasks(lines):
-            if d == today:
-                out.append((f"task:{task[:80]}:{d}", f"Due today in your notes: {task}."))
-            elif d == today + timedelta(days=1):
-                out.append((f"task:{task[:80]}:{d}:tomorrow", f"Due tomorrow in your notes: {task}."))
-            elif today - timedelta(days=7) <= d < today:
-                out.append((f"task:{task[:80]}:{d}:late", f"Still open in your notes, and it was due on {d:%A}: {task}."))
+                out.append((f"fact:{f['id']}:{d}:tomorrow", f"Heads up for tomorrow: {spoken}."))
         # the to-do list, once a day in the afternoon or evening
         if cfg.get("nudge_todos", True) and 15 <= now.hour < 21 and self.last_todo_day != today.isoformat():
             todos = self.e.memory.todos()
@@ -272,8 +240,7 @@ class Nudger:
                 n = len(todos)
                 out.append(("todos", f"Quick nudge: you've got {n} thing{'s' if n != 1 else ''} on your to-do list"
                                      + (f", like {todos[0]}." if todos[0] else ".")))
-        rank = lambda k: 0 if k.endswith(":today") or (k.startswith("task:") and k.count(":") == 2) else \
-            1 if k.endswith(":late") else 2 if k.endswith(":tomorrow") else 3
+        rank = lambda k: 0 if k.endswith(":today") else 1 if k.endswith(":tomorrow") else 2
         return sorted([(k, t) for k, t in out if k not in self.said], key=lambda kt: rank(kt[0]))
 
     def break_due(self, idle, now_ts=None) -> bool:

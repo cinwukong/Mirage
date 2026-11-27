@@ -274,7 +274,6 @@ async function renderMemory() {
   $("#memAdd").textContent = memTab === "chats" ? "Search" : "Add";
   if (memTab === "chats") return renderChats();
   MEM = await api().get_memory();
-  $("#vaultName").textContent = MEM.where;
   const ph = { memories: "Something to remember, like: my favourite colour is purple",
                todos: "Add a to-do", reminders: "in 20 minutes to stretch, or at 5 pm to call mom" }[memTab];
   $("#memInput").placeholder = ph;
@@ -316,7 +315,7 @@ function renderFacts(ul, items) {
       ul.append(h("li", {}, h("span", { class: "when" }, it.when),
         h("span", { class: "t" }, it.text, it.noticed ? h("span", { class: "tag", title: "Mirage picked this up from a conversation" }, "noticed") : null),
         h("button", { class: "x", title: "Forget this", "aria-label": "Forget this",
-          onclick: () => api().memory_action("forget", it.line).then(renderMemory) }, "✕")));
+          onclick: () => api().memory_action("forget", it.id).then(renderMemory) }, "✕")));
     }
   }
 }
@@ -363,7 +362,7 @@ function renderShortcuts() {
 
   // custom voice commands
   box.append(h("h2", { class: "sec" }, "Your voice commands"),
-    h("p", { class: "lede" }, "Make your own: “mirage good morning” could open Spotify, or “mirage work” could open your notes."));
+    h("p", { class: "lede" }, "Make your own: “mirage good morning” could open Spotify, or “mirage work” could open your work folder."));
   const vc = cfg.voice_commands || [];
   const t1 = h("table", { class: "table" });
   vc.forEach((c, idx) => t1.append(h("tr", {},
@@ -433,7 +432,7 @@ function saveDict(key, dict) {
 /* ------------------------------------------------------------------ settings */
 const C = () => S.cfg;
 const SECTIONS = [
-  { id: "brain", name: "Brain", intro: "What answers when you ask something a shortcut can't handle. Opening apps, timers, reminders, weather and your notes are shortcuts, so they never need the brain.",
+  { id: "brain", name: "Brain", intro: "What answers when you ask something a shortcut can't handle. Opening apps, timers, reminders, weather and what Mirage remembers are shortcuts, so they never need the brain.",
     rows: () => [
       seg("brain", "Brain", "Mirage's own brain runs on this PC: free, private, and it works offline.",
           [["local", "Mirage"], ["claude_code", "Claude Code"], ["api", "API key"], ["off", "Off"]], true),
@@ -448,7 +447,7 @@ const SECTIONS = [
       C().brain === "claude_code" && custom("Claude Code", "Uses your Claude account. Install it once, then log in.", claudeCtl),
       C().brain === "claude_code" && seg("claude_model", "Model", "Fast uses the least of your Claude usage and replies quickest.",
         [["haiku", "Fast"], ["sonnet", "Balanced"], ["opus", "Smartest"]]),
-      C().brain === "claude_code" && toggle("claude_power", "Let Claude run commands and edit files", "Lets Claude run commands and read, create or edit any file on this PC without asking. Only turn this on if you trust everything it reads: a web page could tell it to run something. When off, Claude can still search the web, read your notes folder and use Mirage's skills."),
+      C().brain === "claude_code" && toggle("claude_power", "Let Claude run commands and edit files", "Lets Claude run commands and read, create or edit any file on this PC without asking. Only turn this on if you trust everything it reads: a web page could tell it to run something. When off, Claude can still search the web and use Mirage's skills."),
       C().brain === "api" && text("anthropic_api_key", "Anthropic API key", "Pay-per-use. Get one at console.anthropic.com.", "sk-ant-…", true),
       C().brain !== "off" && custom("Try it", "Sends a short test question.", () => [btn("Test brain", () => api().test_brain()), stateEl("brainTest")]),
     ] },
@@ -477,7 +476,7 @@ const SECTIONS = [
       const dnd = (C().dnd_until || 0) * 1000 > Date.now();
       const on = C().nudges !== false;
       return [
-        row("Let Mirage speak up on its own", "Only when it's worth it: a birthday or date it remembers is coming up, a task in your notes is due, and once a day your to-do list. It waits until you're at the PC and not busy.",
+        row("Let Mirage speak up on its own", "Only when it's worth it: a birthday or date it remembers is coming up, and once a day your to-do list. It waits until you're at the PC and not busy.",
             toggleEl(on, v => setCfg({ nudges: v }, true))),
         on && toggle("nudge_todos", "Mention my to-do list once a day", "In the afternoon or evening, if there's something on it."),
         on && row("Quiet hours", "No speaking up on its own during these hours.",
@@ -522,19 +521,14 @@ const SECTIONS = [
       toggle("subtitles_show_you", "Show what I said too", "Your words appear first, then Mirage's reply."),
       custom("Preview", "", () => [btn("Show me", () => api().preview_hologram(), "gold")]),
     ] },
-  { id: "memory", name: "Memory", intro: "Mirage keeps what you tell it as linked notes, so they also show up in Obsidian's graph.",
+  { id: "memory", name: "Memory", intro: "What Mirage remembers about you and your to-do list stay on this PC, in Mirage's own data. See and change them on the Memory page.",
     rows: () => [
-      custom("Where to keep notes", "Pick your Obsidian vault; Mirage writes into a Mirage folder inside it.", () => [
-        selectEl(S.options.vaults, C().vault_path || "", v => setCfg({ vault_path: v }).then(() => toast("Notes now go to " + (v || "Mirage's own folder")))),
-        btn("Browse…", () => api().browse_vault().then(r => { if (r) { S.cfg = r; renderSettings(); } }))]),
       row("Learn from our conversations", "Mirage's own brain notices lasting things about you as you talk (what you like, your projects, people) and saves them, tagged “noticed”. Never passwords, codes or card numbers.",
           toggleEl(C().auto_learn !== false, v => setCfg({ auto_learn: v }))),
       row("Keep a history of our chats", "Saved on this PC only, so Mirage can look back: “what did we talk about yesterday?” Shown under Memory, Past chats.",
           toggleEl(C().chat_history !== false, v => setCfg({ chat_history: v })),
           sureBtn("Delete history", "Click again to delete", () => api().memory_action("clear_chats", "").then(r => toast(r.message)))),
       custom("Get to know me", "Mirage asks you a few questions and remembers the answers.", () => [btn("Start", () => api().memory_action("interview", "").then(r => { toast(r.message); show("home"); }))]),
-      toggle("daily_log", "Daily log", "Writes what you and Mirage said into a note for each day."),
-      custom("Links for the graph", "Adds links to memories saved before Mirage linked them.", () => [btn("Link old memories", () => api().relink().then(m => toast(m)))]),
     ] },
   { id: "skills", name: "Skills", intro: "Settings for Mirage's built-in abilities.",
     rows: () => [
@@ -630,7 +624,7 @@ function renderSettings() {
   if (sec.id === "voice" && C().voice_engine === "mirage" && S.speech && S.speech.last_error)
     p.append(h("div", { class: "note" }, "Last voice problem: " + S.speech.last_error));
   if (sec.id === "brain" && C().brain === "claude_code")
-    p.append(h("div", { class: "note" }, "Shortcuts stay free: anything Mirage can do by itself (apps, websites, timers, reminders, to-dos, notes, weather, media keys) never reaches Claude. Add your own under Shortcuts."));
+    p.append(h("div", { class: "note" }, "Shortcuts stay free: anything Mirage can do by itself (apps, websites, timers, reminders, to-dos, memory, weather, media keys) never reaches Claude. Add your own under Shortcuts."));
   p.scrollTop = scroll;
 }
 
@@ -784,7 +778,7 @@ function renderSetup() {
     name.addEventListener("keydown", e => { if (e.key === "Enter") next(); });
     body = [h("img", { class: "setup-logo", src: "logo.png", alt: "" }),
       h("h1", { id: "setupTitle" }, "Hello. I'm Mirage."),
-      h("p", {}, "Say my name, then what you want: open apps, set timers and reminders, answer questions, keep notes, even use your mouse and keyboard. I run on this PC."),
+      h("p", {}, "Say my name, then what you want: open apps, set timers and reminders, answer questions, remember things for you, even use your mouse and keyboard. I run on this PC."),
       h("label", { for: "setupName" }, "What should I call you?"), name,
       h("div", { class: "setup-actions" }, h("span"), btn("Next", next, "gold"))];
     setTimeout(() => name.focus(), 50);

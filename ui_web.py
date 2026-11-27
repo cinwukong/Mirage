@@ -312,7 +312,7 @@ class Bridge:
             except ValueError:
                 pass
             text = sk.spoken_fact(f["text"])
-            memories.append({"line": f["line"], "when": when, "text": text, "topic": f["topic"] or "Other",
+            memories.append({"id": f["id"], "when": when, "text": text, "topic": f["topic"] or "Other",
                              "noticed": f["noticed"]})
         todos = [{"i": i, "text": t, "done": d} for i, t, d in mem.todo_entries()]
         todos.sort(key=lambda x: x["done"])
@@ -320,8 +320,7 @@ class Bridge:
                       "when": sk.say_time(datetime.fromisoformat(r["when"]))[0:1].upper()
                       + sk.say_time(datetime.fromisoformat(r["when"]))[1:]}
                      for r in e.reminders.upcoming()]
-        where = mem.vault.name if mem.is_obsidian() else "Mirage's own folder"
-        return {"where": where, "memories": memories, "todos": todos, "reminders": reminders,
+        return {"memories": memories, "todos": todos, "reminders": reminders,
                 "chats_on": bool(e.chats and e.cfg.get("chat_history", True))}
 
     def get_chats(self, query=""):
@@ -334,10 +333,12 @@ class Bridge:
         e = self._app.engine
         mem, sk = e.memory, e.skills
         if kind == "remember":
-            mem.remember(str(payload))
+            if not mem.remember(str(payload)):
+                return {"error": "I don't keep passwords, codes or card numbers. Keep those somewhere safe instead."}
+            e.emit("memory_changed")
             return {"message": "Remembered."}
         if kind == "forget":
-            mem.delete_memory_line(str(payload))
+            mem.delete_fact(int(payload))
             return {}
         if kind == "add_todo":
             mem.add_todo(str(payload))
@@ -370,32 +371,6 @@ class Bridge:
             return {"message": "Mirage will ask you a few questions."}
         return {"error": f"Unknown action {kind}"}
 
-    def open_vault(self):
-        e = self._app.engine
-        note = e.memory.folder / "Memory.md"
-        if not note.exists():
-            e.memory.remember("Mirage memory started")
-        if e.memory.is_obsidian():
-            import urllib.parse
-            import webbrowser
-            webbrowser.open("obsidian://open?path=" + urllib.parse.quote(str(note)))
-        else:
-            open_path(e.memory.folder)
-
-    def browse_vault(self):
-        import webview
-        kind = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or getattr(webview, "FOLDER_DIALOG", 20)
-        res = self._app.window.create_file_dialog(kind)
-        if not res:
-            return None
-        path = str(self._app.engine.skills.vault_root(res[0]))
-        self._app.engine.update_config({"vault_path": path})
-        self._app.refresh_options()
-        return self._app.cfg_view()
-
-    def relink(self):
-        n = self._app.engine.memory.relink()
-        return f"Linked {n} older memor{'y' if n == 1 else 'ies'}." if n else "Your memories already have links."
 
     # ---- brain ----
     def test_brain(self):
@@ -547,7 +522,7 @@ class App:
         self.tray = None
         self.start_hidden = start_hidden
         self._hidden = start_hidden
-        self.options = {"mics": [], "voices": [], "vaults": [], "vs": {"ok": False, "voices": []}}
+        self.options = {"mics": [], "voices": [], "vs": {"ok": False, "voices": []}}
         self.engine = M.Engine(on_event=self.on_engine_event)
         self.whats_new_pending = self._whats_new()
         self.holo = hologram.HologramThread(lambda: self.engine.cfg)
@@ -605,14 +580,7 @@ class App:
     def refresh_options(self):
         e = self.engine
         e.voice.ready.wait(3)
-        vaults = [("", "Documents › Mirage")]
-        for name, path in e.skills.find_obsidian_vaults():
-            vaults.append((path, f"{name} (Obsidian)"))
-        cur = e.cfg.get("vault_path") or ""
-        if cur and cur not in [v[0] for v in vaults]:
-            vaults.append((cur, Path(cur).name))
-        self.options.update({"mics": M.list_input_devices(), "voices": [list(v) for v in e.voice.voices],
-                             "vaults": [list(v) for v in vaults]})
+        self.options.update({"mics": M.list_input_devices(), "voices": [list(v) for v in e.voice.voices]})
         self.refresh_vs()
 
     def refresh_vs(self):

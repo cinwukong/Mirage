@@ -75,8 +75,8 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     Data := ExpandConstant('{localappdata}\Mirage');
-    if DirExists(Data) and (MsgBox('Also delete your Mirage settings, chat history, and the downloaded voice and brain?' + #13#10 + #13#10 +
-        Data + #13#10 + #13#10 + 'Your notes in Documents\Mirage are kept either way.',
+    if DirExists(Data) and (MsgBox('Also delete your Mirage settings, what it remembers about you, your to-dos, chat history, and the downloaded voice and brain?' + #13#10 + #13#10 +
+        Data + #13#10 + #13#10 + 'Notes older versions wrote to Documents\Mirage are kept either way.',
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
       DelTree(Data, True, True, True);
   end;

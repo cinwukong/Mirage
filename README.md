@@ -3,12 +3,12 @@
 A voice assistant for Windows that runs on your own PC. Say **"Mirage"**, then what you want.
 
 - **Shortcuts that need no AI:** open apps and websites, switch and snap windows, timers, reminders, your to-do
-  list, notes, weather, media keys and Spotify. Instant, offline and free.
+  list, memory, weather, media keys and Spotify. Instant, offline and free.
 - **Its own brain:** an open AI model on your graphics card answers questions, holds a conversation, can look at
   your screen and use your mouse and keyboard for you. Free and private. Claude works too, if you'd rather.
 - **Its own voice and ears:** a natural voice (Kokoro) and accurate hearing (NVIDIA Parakeet), both on your PC.
-- **It remembers:** what you tell it, and things it notices about you, as notes you can read (and open in
-  Obsidian). Past conversations are searchable.
+- **It remembers:** what you tell it, and things it notices about you, all on the Memory page where you can see
+  and delete them. Past conversations are searchable.
 - **Talk naturally:** carry on without repeating "Mirage", and talk over it to interrupt.
 - **A hologram in the corner** while it listens, thinks and speaks, with optional subtitles.
 
@@ -25,9 +25,10 @@ previous version to fall back on if the new one doesn't start. It installs to
 `%LOCALAPPDATA%\Programs\Mirage` and needs no administrator rights.
 
 ## Where your things are
-- **Settings, chat history, the voice and the brain:** `%LOCALAPPDATA%\Mirage`. They stay when you update.
+- **Settings, what Mirage remembers, your to-dos, chat history, the voice and the brain:** `%LOCALAPPDATA%\Mirage`. They stay when you update.
   When you uninstall, Mirage asks whether to delete them.
-- **Notes:** `Documents\Mirage`, or an Obsidian vault you pick under **Settings → Memory**.
+- Mirage before 3.0.3 kept memories and to-dos as notes in `Documents\Mirage`; they're brought in once and the
+  notes are left as they were.
 - Nothing is sent anywhere unless you choose Claude as the brain, or ask for the weather or a web search.
 
 ## What you can say
@@ -45,7 +46,7 @@ previous version to fall back on if the new one doesn't start. It installs to
 Make your own voice commands on the **Shortcuts** page, and turn off built-in ones you don't want.
 
 ## Speaking up on its own
-Rarely, and only when it's worth it: a date it remembers is coming up, a task in your notes is due, or once a day
+Rarely, and only when it's worth it: a date it remembers is coming up, or once a day
 your to-do list. It stays quiet during quiet hours (23:00 to 08:00 by default), when you're away, and while a game
 fills the screen. Your own reminders always come through. See **Settings → Speaking up**.
 

@@ -1,7 +1,7 @@
 """
 Mirage's longer memory.
 
-- ChatLog: every exchange, kept on this PC (not in the notes vault, which may sync to the cloud), searchable
+- ChatLog: every exchange, kept on this PC in Mirage's data folder, searchable
   by words and by day: "what did we talk about yesterday?"
 - Learner: when a conversation has gone quiet, Mirage's own brain reads it and saves the lasting things it
   learned about you (likes, people, projects, plans), filed by topic and tagged #noticed. Corrections replace
@@ -241,7 +241,7 @@ def save_facts(memory, facts, log=print, sensitive=None, noticed=True) -> list:
             continue
         old = memory.find_fact(f["replaces"], 0.5) if f.get("replaces") else None
         if old:
-            memory.replace_fact(old["line"], text, f["topic"], noticed)
+            memory.replace_fact(old["id"], text, f["topic"], noticed)
             log(f"Memory: corrected {old['text']!r} -> {text!r}")
             saved.append(text)
             continue
