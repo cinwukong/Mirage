@@ -224,3 +224,35 @@ class ImportOldNotes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class YourName(unittest.TestCase):
+    """What Mirage calls you (Settings, General, and the first-run setup)."""
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.m = Memories(self.dir / "memory.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_no_name_until_you_give_one(self):
+        self.assertEqual(self.m.name(), "")
+
+    def test_the_name_you_give_is_the_one_used(self):
+        self.m.set_name("  Luca ")
+        self.assertEqual(self.m.name(), "Luca")
+        self.assertIn("The user wants to be called Luca", [f["text"] for f in self.m.me_facts()])
+
+    def test_a_new_name_replaces_the_old_one(self):
+        self.m.set_name("Luca")
+        self.m.remember("my favourite colour is purple")
+        self.m.set_name("Lu")
+        self.assertEqual(self.m.name(), "Lu")
+        texts = [f["text"] for f in self.m.facts(None)]
+        self.assertNotIn("The user wants to be called Luca", texts)
+        self.assertIn("my favourite colour is purple", texts)
+
+    def test_an_empty_name_forgets_it(self):
+        self.m.set_name("Luca")
+        self.m.set_name("")
+        self.assertEqual(self.m.name(), "")

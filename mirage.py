@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 import paths
+import shortcuts
 
 BASE_DIR = paths.APP_DIR                # Mirage's code
 DATA_DIR = paths.DATA                   # your settings and downloads (%LOCALAPPDATA%\Mirage)
@@ -136,7 +137,7 @@ DEFAULT_CONFIG = {
     "hologram_enabled": True,
     "hologram_corner": "bottom-right",   # top-left, top-right, bottom-left, bottom-right
     "hologram_size": "medium",           # small, medium, large
-    "hologram_style": "logo",            # "logo" (purple headband) or "orb"
+    "hologram_style": "orb",             # "orb" or "logo" (the purple headband)
     "subtitles_enabled": True,           # show Mirage's replies as text under the hologram
     "subtitles_show_you": False,         # also show what you said
     "weather_city": "",
@@ -1174,6 +1175,7 @@ class Engine:
         if "github_token" in changes:
             import updater
             updater.TOKEN = (changes["github_token"] or "").strip()
+        self.emit("config", sorted(changes))  # e.g. quiet mode said out loud: the app's Quiet button follows
 
     COMMON_LINES = ["Mirage online.", "Yes?", "Done.", "Playing.", "Paused.", "Got it. I'll remember that.",
                     "Hello. This is how I sound.", "It's already playing.", "It's already paused.", "Here I am.",
@@ -1651,11 +1653,9 @@ class Engine:
             return group not in off
 
         # ---- your own voice commands come first, so they win over anything built in ----
-        plain = re.sub(r"[^\w\s']", "", text).strip()
-        for cmd in self.cfg.get("voice_commands") or []:
-            phrase = re.sub(r"[^\w\s']", "", (cmd.get("phrase") or "").lower()).strip()
-            if phrase and plain == phrase:
-                return say(self.run_voice_command(cmd))
+        cmd = shortcuts.find(self.cfg.get("voice_commands"), text)
+        if cmd:
+            return say(self.run_voice_command(cmd))
 
         if text in ("never mind", "nevermind", "cancel", "nothing", "stop", "be quiet", "quiet", "shut up", "stop talking",
                     "enough", "silence", "hush"):

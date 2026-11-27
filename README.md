@@ -81,3 +81,5 @@ Mirage stands on these, each under its own license:
   (Gemma Terms of Use), or [Claude](https://claude.ai)
 - The app: [Python](https://www.python.org) (PSF), [pywebview](https://pywebview.flowrl.com) (BSD),
   [Inno Setup](https://jrsoftware.org/isinfo.php)
+- Fonts: [Figtree](https://github.com/erikdkennedy/figtree) and [Sora](https://github.com/sora-xor/sora-font)
+  (SIL Open Font License 1.1, in web/fonts)

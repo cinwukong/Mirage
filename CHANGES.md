@@ -3,6 +3,15 @@
 Mirage shows the notes for a new version once, after it updates. Each version is a "## <version>" heading followed by
 "- " lines, newest first.
 
+## 3.1.0
+- A new look: calm dark purple, with gold only where it matters, clearer text and new fonts.
+- Home has a big status pill with the microphone button next to it, a small orb that only moves while I listen, think or speak, suggestions, and a "Quiet for an hour" button.
+- Five places in the menu: Home, Memory, Skills, Shortcuts and Settings. The new Skills page lets you switch what I can do on and off, with each one's settings.
+- Settings are in four groups, with a search box. Each setting has a short name, and a "?" shows more about it.
+- Making a shortcut is easier: press New shortcut, type or say the phrase, pick what it does, try it, then save it.
+- Memory has three tabs: Things I remember, Past chats, and Calendar for your reminders and to-dos. Delete buttons are always visible.
+- The corner hologram matches the new look, and its subtitles sit on a dark panel so they're easy to read on any background.
+
 ## 3.0.4
 - Test results (the microphone test, testing the brain, update progress) now show in a box under the setting, instead of squeezing the setting's name into a narrow column.
 

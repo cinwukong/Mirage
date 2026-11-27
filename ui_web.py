@@ -15,6 +15,7 @@ from pathlib import Path
 
 import mirage as M
 import paths
+import shortcuts
 
 WEB = M.BASE_DIR / "web"
 ASSETS = M.BASE_DIR / "assets"
@@ -99,6 +100,7 @@ def fresh_page_after_update():
 class Bridge:
     def __init__(self, app):
         self._app = app
+        self._phrase_lock = threading.Lock()  # one "Say it" at a time
 
     # ---- state ----
     def get_state(self):
@@ -124,6 +126,7 @@ class Bridge:
             "startup": get_startup(),
             "update_available": a.update_available,
             "whats_new": a.whats_new_pending,
+            "name": e.memory.name(),
         }
 
     # ---- what's new ----
@@ -371,6 +374,92 @@ class Bridge:
             return {"message": "Mirage will ask you a few questions."}
         return {"error": f"Unknown action {kind}"}
 
+    # ---- your own shortcuts (the "+ New shortcut" dialog) ----
+    def check_shortcut(self, cmd):
+        """What's wrong with a shortcut, in a sentence, or None. The dialog asks before each next step."""
+        return shortcuts.check(dict(cmd or {}))
+
+    def save_shortcut(self, cmd, old_phrase=""):
+        """Check and save one shortcut. Editing one under a new phrase removes the old phrase."""
+        cmd = dict(cmd or {})
+        why = shortcuts.check(cmd)
+        if why:
+            return {"error": why}
+        e = self._app.engine
+        cmds, replaced = shortcuts.put(shortcuts.without(e.cfg.get("voice_commands"), old_phrase), cmd)
+        e.update_config({"voice_commands": cmds})
+        said = shortcuts.phrase(cmd.get("phrase"))
+        return {"message": f"Replaced your “{said}” shortcut." if replaced else f"Saved. Say “mirage {said}”.",
+                "cfg": self._app.cfg_view()}
+
+    def delete_shortcut(self, phrase):
+        e = self._app.engine
+        e.update_config({"voice_commands": shortcuts.without(e.cfg.get("voice_commands"), phrase)})
+        return self._app.cfg_view()
+
+    def test_shortcut(self, cmd):
+        """Run a shortcut's action now, without saving it. The answer comes back as progress "scTest".
+        Typing and pressing keys go to the window in front, so those wait a few seconds for you to click it."""
+        a = self._app
+        cmd = dict(cmd or {})
+        why = shortcuts.check(dict(cmd, phrase="test"))  # the phrase isn't needed to try the action
+        if why:
+            a.push("progress", ["scTest", why, "bad"])
+            return
+
+        def work():
+            if cmd.get("action") in ("type", "keys"):
+                for left in (3, 2, 1):
+                    a.push("progress", ["scTest", f"Click the window it should go to: trying it in {left}…", "wait"])
+                    time.sleep(1)
+            try:
+                said = a.engine.run_voice_command(cmd) or "Done."
+            except Exception as ex:
+                M.log(f"Shortcut test failed: {ex}")
+                said = f"That didn't work: {ex}"
+            # what a "say" shortcut says is never a failure; the others fail with these words (run_voice_command)
+            bad = cmd.get("action") != "say" and said.startswith(("I couldn't", "That didn't"))
+            if cmd.get("action") == "say":
+                a.engine.voice.say(said, show=False, force=True)
+            a.push("progress", ["scTest", said, "bad" if bad else "ok"])
+        threading.Thread(target=work, daemon=True).start()
+
+    def listen_phrase(self):
+        """Hear the phrase for a new shortcut: three seconds of the microphone, written down.
+        Progress "scPhrase" says how it's going; the words come back as a "phrase" event."""
+        a = self._app
+        e = a.engine
+
+        def tell(text, how):
+            a.push("progress", ["scPhrase", text, how])
+
+        if not self._phrase_lock.acquire(blocking=False):
+            return  # already listening for one
+
+        def work():
+            try:
+                if e.mic_muted:
+                    return tell("The microphone is muted. Unmute it, or type the phrase.", "bad")
+                if not e.speech.ready():
+                    return tell("Hearing isn't set up yet, so type the phrase instead.", "bad")
+                tell("Listening: say the phrase now…", "wait")
+                samples = e.record(3.0)
+                heard = ""
+                if samples:
+                    try:
+                        import numpy as np
+                        heard = e.speech.transcribe(np.asarray(samples, dtype=np.float32))
+                    except Exception as ex:
+                        M.log(f"Shortcut phrase: couldn't write it down: {ex}")
+                heard = shortcuts.phrase(heard, e.cfg.get("wake_words") or ("mirage",))
+                if not heard:
+                    return tell("I didn't catch that. Try again, or type it.", "bad")
+                a.push("phrase", heard)
+                tell(f"I heard “{heard}”.", "ok")
+            finally:
+                self._phrase_lock.release()
+        threading.Thread(target=work, daemon=True).start()
+
 
     # ---- brain ----
     def test_brain(self):
@@ -488,11 +577,16 @@ class Bridge:
         threading.Thread(target=work, daemon=True).start()
 
     def setup_name(self, name):
-        """First-run setup: what to call you."""
-        name = str(name or "").strip()[:40]
-        if name:
-            self._app.engine.memory.remember(f"The user wants to be called {name}", topic="Me")
+        """First-run setup: what to call you (an empty answer keeps the name you had)."""
+        if str(name or "").strip():
+            self._app.engine.memory.set_name(name)
         return True
+
+    def set_name(self, name):
+        """Settings, General: what to call you. Empty forgets it."""
+        self._app.engine.memory.set_name(name)
+        self._app.engine.emit("memory_changed")
+        return self._app.engine.memory.name()
 
     def open_url(self, url):
         import webbrowser
@@ -660,6 +754,11 @@ class App:
         elif kind == "speech":
             if getattr(self, "engine", None) is not None:  # not while the engine is still starting
                 self.push("state", {"speech": self.speech_state(), "cfg": self.cfg_view()})
+            return
+        elif kind == "config":
+            # only quiet mode: a full refresh would redraw Settings while you're typing in it
+            if "dnd_until" in (data or ()) and getattr(self, "engine", None) is not None:
+                self.push("quiet", self.engine.cfg.get("dnd_until", 0))
             return
         self.push(kind, data)
 

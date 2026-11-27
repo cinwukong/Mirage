@@ -122,6 +122,22 @@ class Memories:
                                   (limit,)).fetchall()
         return [self._fact(r) for r in rows]
 
+    NAME_FACT = "The user wants to be called "
+
+    def name(self) -> str:
+        """What Mirage calls you ("" if you haven't said)."""
+        with self._db() as db:
+            r = db.execute("SELECT text FROM facts WHERE text LIKE ? ORDER BY t DESC, id DESC LIMIT 1",
+                           (self.NAME_FACT + "%",)).fetchone()
+        return r["text"][len(self.NAME_FACT):].strip() if r else ""
+
+    def set_name(self, name: str) -> bool:
+        """Call you this from now on: the old name is forgotten. An empty name just forgets it."""
+        name = " ".join(str(name or "").split())[:40]
+        with self._db() as db:
+            db.execute("DELETE FROM facts WHERE text LIKE ?", (self.NAME_FACT + "%",))
+        return self.remember(self.NAME_FACT + name, topic="Me") if name else True
+
     def topics(self) -> list:
         with self._db() as db:
             return [r[0] for r in db.execute("SELECT DISTINCT topic FROM facts WHERE topic IS NOT NULL AND topic != ''")]

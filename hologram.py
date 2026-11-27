@@ -1,5 +1,5 @@
 """
-Mirage hologram: a small animated "reactor" that pops up in a corner of the screen while
+Mirage hologram: a small orb (or the purple headband) that pops up in a corner of the screen while
 Mirage is listening, thinking or speaking. The window has no frame, stays on top, has a
 see-through background and lets mouse clicks pass through it.
 """
@@ -17,15 +17,20 @@ LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
 KEY = "#010203"  # this exact colour becomes fully transparent on Windows
 
 COLORS = {
-    "awaiting": "#f2d17e",   # gold: listening for your command
-    "thinking": "#d9a93f",   # deep gold, spinning faster
+    "awaiting": "#e3b860",   # gold: listening for your command
+    "thinking": "#e3b860",   # gold, with an arc going round
     "acting": "#ff9a76",     # coral: using your mouse and keyboard (Esc stops it)
-    "speaking": "#c9b2ff",   # lavender
-    "listening": "#b794ff",
-    "loading": "#9d8db5",
-    "muted": "#6b5a80",
-    "error": "#e2574c",
+    "speaking": "#b9a2f5",   # light purple
+    "listening": "#b9a2f5",
+    "loading": "#8f84a3",
+    "muted": "#6f6680",
+    "error": "#f07167",
 }
+PANEL = "#14101c"        # what the orb and the subtitles sit on (the app's dark ground)
+LINE = "#2e2640"         # its edge
+RING_IDLE = "#3a2f52"    # the orb's ring while nothing is happening
+CORE = ("#3e2b78", "#8a6be3", "#d4c4ff")        # the orb: dark edge, purple, the light on its top left
+CORE_OFF = ("#2a2633", "#4f485d", "#a49cb1")    # ... grey while the microphone is off
 ACTIVE = ("awaiting", "thinking", "speaking", "acting")
 BUSY = ("thinking", "acting")
 SIZES = {"small": 150, "medium": 210, "large": 290}
@@ -36,11 +41,6 @@ def _mix(c1, c2, f):
     a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
     return "#" + "".join(f"{round(x + (y - x) * f):02x}" for x, y in zip(a, b))
-
-
-def _dim(c, f):
-    """Darker version of a colour, but never so dark it reads as a black ring."""
-    return _mix(c, "#0b1020", f)
 
 
 class Hologram:
@@ -57,6 +57,8 @@ class Hologram:
         self.sub_who, self.sub_until = "mirage", 0.0
         self.captions = None     # captions.Captions, made in _place (it needs the font and the box width)
         self.scaling = 1.0
+        self.motion = True       # False when Windows' animation effects are off: then nothing moves
+        self.cap_h = 0
         self.win = None
         self._logo_src = None
         self._logo_frames = {}   # (size, step) -> PhotoImage
@@ -121,6 +123,7 @@ class Hologram:
             scaling = 1.0
         scaling = max(1.0, scaling)
         self.scaling = scaling
+        self.motion = animations_on()
         size = int(SIZES.get(cfg.get("hologram_size", "medium"), 210) * scaling)
         if self._use_logo():
             art_w, art_h = int(size * 1.55), int(size * 0.95)
@@ -135,7 +138,7 @@ class Hologram:
             self.cap_font = tkfont.Font(root=self.root, family="Segoe UI" if sys.platform.startswith("win") else "Helvetica",
                                         size=int(12 * scaling) or 12, weight="bold")
             self.line_h = self.cap_font.metrics("linespace") + 1
-            cap_h = ROWS * self.line_h + int(10 * scaling)
+            cap_h = ROWS * self.line_h + int(16 * scaling)
             width = w - int(24 * scaling)
             if self.captions is None or self.captions.width != width:
                 self.captions = Captions(self.cap_font.measure, width)
@@ -154,11 +157,12 @@ class Hologram:
         else:
             self.cap.pack_forget()
         self.size, self.w, self.h = size, art_w, art_h   # w/h = the animated part
+        self.cap_h = cap_h
         self.win_w, self.win_h = w, h
         self.ox = (w - art_w) / 2                          # centre the animation horizontally
 
     def _use_logo(self):
-        return self._logo_src is not None and self.get_cfg().get("hologram_style", "logo") == "logo"
+        return self._logo_src is not None and self.get_cfg().get("hologram_style", "orb") == "logo"
 
     def _logo_frame(self, width, step):
         key = (width, step)
@@ -305,150 +309,119 @@ class Hologram:
         if self.status == "awaiting":
             target = min(1.0, self.level * 5)
         elif self.status == "speaking":
-            target = 0.45 + 0.35 * abs(math.sin(t * 9)) * abs(math.sin(t * 3.7))
+            target = 0.45 + 0.35 * abs(math.sin(t * 9)) * abs(math.sin(t * 3.7)) if self.motion else 0.5
         elif self.status in BUSY:
             target = 0.15
         self.smooth = self.smooth * 0.7 + target * 0.3
         return self.smooth
 
     def _draw_logo(self, t, scale):
-        """The purple headband in the middle, elliptical rings around it, a voice wave under it."""
+        """The purple headband (Mirage's logo), and a small voice meter under it. Still while nothing happens."""
         c = self.canvas
         c.delete("all")
         W, H = self.w, self.h
-        cx, cy = self.ox + W / 2, H * 0.43
-        color = COLORS.get(self.status, COLORS["listening"])
-        bright = _mix(color, "#ffffff", 0.45)
-        dim = _dim(color, 0.45)
+        cx, cy = self.ox + W / 2, H * 0.42
         lv = self._level(t)
-        speed = 3.0 if self.status in BUSY else 1.0
-
-        # elliptical rings of rotating arc segments, wider than the headband
-        for k, n, ext, direction, col, width in ((1.00, 3, 55, 1, color, 2), (0.90, 4, 30, -1, bright, 1)):
-            rx, ry = W * 0.46 * k * scale, H * 0.36 * k * scale
-            for i in range(n):
-                start = (direction * t * 45 * speed + i * 360 / n) % 360
-                c.create_arc(cx - rx, cy - ry, cx + rx, cy + ry, start=start, extent=ext,
-                             style="arc", outline=col, width=max(width, int(self.size * 0.012 * width)))
-        rx, ry = W * 0.43 * scale, H * 0.33 * scale
-        c.create_oval(cx - rx, cy - ry, cx + rx, cy + ry, outline=dim, width=1)
-        if self.status in BUSY:
-            rx, ry = W * 0.39 * scale, H * 0.30 * scale
-            c.create_arc(cx - rx, cy - ry, cx + rx, cy + ry, start=(t * 380) % 360, extent=45,
-                         style="arc", outline=bright, width=max(2, int(self.size * 0.018)))
-
-        # the logo, pulsing with the voice
-        step = max(0, min(LOGO_STEPS - 1, int(round(lv * (LOGO_STEPS - 1)))))
-        breathe = 1 + 0.02 * math.sin(t * 2.4)
-        img = self._logo_frame(int(W * 0.66 * scale * breathe), step)
+        step = max(0, min(LOGO_STEPS - 1, int(round(lv * (LOGO_STEPS - 1))))) if self.motion else 0  # swells with the voice
+        img = self._logo_frame(int(W * 0.74 * scale), step)
         c.create_image(cx, cy, image=img)
+        self._draw_meter(c, cx, H * 0.88, W * 0.22 * scale, t, lv)
 
-        # voice wave under the logo
-        bars = 25
-        base_y = H * 0.90
-        span = W * 0.56 * scale
-        bw = max(2, int(span / bars * 0.45))
+    def _draw_meter(self, c, cx, cy, span, t, lv):
+        """Seven short bars: flat dots while idle, your voice or Mirage's while listening or speaking,
+        a slow wave while it thinks or uses your PC."""
+        color = COLORS.get(self.status, COLORS["listening"])
+        bars, bw = 7, max(3, int(self.size * 0.022))
         for i in range(bars):
             x = cx - span / 2 + span * i / (bars - 1)
             edge = 1 - abs(i - (bars - 1) / 2) / ((bars - 1) / 2)  # taller in the middle
-            wob = 0.5 + 0.5 * math.sin(t * 8 + i * 0.9)
-            h = H * (0.015 + 0.11 * lv * wob * (0.35 + 0.65 * edge))
-            c.create_line(x, base_y - h, x, base_y + h, fill=color, width=bw, capstyle="round")
+            if self.status in BUSY and self.motion:
+                h = self.size * (0.012 + 0.03 * (0.5 + 0.5 * math.sin(t * 5 - i * 0.9)))
+            elif self.status in ("awaiting", "speaking"):
+                if self.motion:
+                    wob = 0.6 + 0.4 * math.sin(t * 8 + i * 1.3)
+                    h = self.size * (0.012 + 0.07 * lv * wob * (0.4 + 0.6 * edge))
+                else:  # animations off: a still meter, just lit up
+                    h = self.size * (0.012 + 0.03 * edge)
+            else:
+                h = 0
+            fill = color if self.status in ACTIVE else RING_IDLE
+            c.create_line(x, cy - h, x, cy + h, fill=fill, width=bw, capstyle="round")
 
     def _draw_caption(self):
-        """The subtitle strip: the lines that have started, scrolled; the piece being said bright, older ones faded,
-        a line leaving the top fades out. Redrawn only when it changes."""
+        """The subtitle strip on a dark panel: the lines that have started, scrolled; the piece being said bright,
+        older ones faded, a line leaving the top fades out. Redrawn only when it changes."""
         c = self.cap
         c.delete("all")
         if not self.captions:
             return
+        lines = list(self.captions.lines())
+        if not lines:
+            return
         sc, lh = self.scaling, self.line_h
-        full = "#cbd5e1" if self.sub_who == "you" else "#f3e8ff"
-        x, top = self.win_w / 2, int(5 * sc)
-        for pos, line, bright in self.captions.lines():
+        x, top, inset = self.win_w / 2, int(8 * sc), int(4 * sc)
+        rows = max([pos for pos, _, _ in lines if pos >= 0] or [0]) + 1  # the panel is as tall as the lines on it
+        _round_rect(c, inset, 1, self.win_w - inset, min(self.cap_h - 1, 2 * top + rows * lh), int(12 * sc),
+                    fill=PANEL, outline=LINE)
+        full = "#cfc6dd" if self.sub_who == "you" else "#efe9f7"
+        for pos, line, bright in lines:
             fade = bright * (min(1.0, 1.0 + pos) if pos < 0 else 1.0)  # leaving the top: fade it out
             if fade <= 0.05:
                 continue
-            fill = _mix("#3b3350", full, fade)
-            y = top + pos * lh
-            # dark outline so the text is readable on any background
-            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1), (-1, 1), (1, -1)):
-                c.create_text(x + dx, y + dy, text=line, anchor="n", font=self.cap_font, fill="#0b0b14")
-            c.create_text(x, y, text=line, anchor="n", font=self.cap_font, fill=fill)
+            c.create_text(x, top + pos * lh, text=line, anchor="n", font=self.cap_font, fill=_mix(PANEL, full, fade))
 
     def _draw(self, t, scale):
+        """The orb, the same as on the app's Home page: a ring and a purple core on a dark disc.
+        Still while idle; the ring follows your voice while it listens, an arc goes round while it thinks,
+        and the core breathes while it speaks."""
         c = self.canvas
         c.delete("all")
         s = self.size
         cx, cy = self.ox + s / 2, s / 2
-        R = s * 0.40 * scale
-        color = COLORS.get(self.status, COLORS["listening"])
-        bright = _mix(color, "#ffffff", 0.45)
-        dim = _dim(color, 0.45)
-        dimmer = _dim(color, 0.65)
+        R = s * 0.44 * scale
+        st = self.status
+        lv = self._level(t)
+        c.create_oval(cx - R, cy - R, cx + R, cy + R, fill=PANEL, outline=LINE, width=1)
 
-        target = 0.0
-        if self.status == "awaiting":
-            target = min(1.0, self.level * 5)
-        elif self.status == "speaking":
-            target = 0.45 + 0.35 * abs(math.sin(t * 9)) * abs(math.sin(t * 3.7))
-        self.smooth = self.smooth * 0.7 + target * 0.3
-        lv = self.smooth
+        width = max(2, int(s * 0.014))
+        rr = R * 0.74 * (1 + 0.12 * lv if st == "awaiting" and self.motion else 1)
+        ring = {"awaiting": COLORS["awaiting"], "speaking": COLORS["speaking"], "error": COLORS["error"]}.get(st, RING_IDLE)
+        c.create_oval(cx - rr, cy - rr, cx + rr, cy + rr, outline=ring, width=width)
+        if st in BUSY:
+            start = (-t * 330) % 360 if self.motion else 90
+            c.create_arc(cx - rr, cy - rr, cx + rr, cy + rr, start=start, extent=90, style="arc",
+                         outline=COLORS[st], width=width + 1)
 
-        # outer tick ring (slowly rotating)
-        rot = t * 12
-        for i in range(72):
-            a = math.radians(i * 5 + rot)
-            long = i % 6 == 0
-            r1 = R * (1.02 if long else 1.04)
-            r2 = R * 1.10
-            c.create_line(cx + r1 * math.cos(a), cy + r1 * math.sin(a),
-                          cx + r2 * math.cos(a), cy + r2 * math.sin(a),
-                          fill=color if long else dim, width=2 if long else 1)
+        k = 1 + (0.1 * lv if st == "speaking" and self.motion else 0)
+        edge, body, light = CORE_OFF if st == "muted" else CORE
+        r = R * 0.40 * k
+        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=edge, outline="")
+        r2, off = r * 0.80, r * 0.10
+        c.create_oval(cx - r2 - off, cy - r2 - off, cx + r2 - off, cy + r2 - off, fill=body, outline="")
+        r3, off3 = r * 0.30, r * 0.32
+        c.create_oval(cx - r3 - off3, cy - r3 - off3, cx + r3 - off3, cy + r3 - off3, fill=light, outline="")
 
-        # thin full circles
-        for k, col in ((0.96, dim), (0.62, dimmer)):
-            r = R * k
-            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=col, width=1)
 
-        # rotating arc segments, two rings in opposite directions
-        speed = 3.0 if self.status in BUSY else 1.0
-        r = R * 0.86
-        for i in range(3):
-            c.create_arc(cx - r, cy - r, cx + r, cy + r, start=(t * 40 * speed + i * 120) % 360,
-                         extent=70, style="arc", outline=color, width=max(2, int(s * 0.018)))
-        r = R * 0.74
-        for i in range(4):
-            c.create_arc(cx - r, cy - r, cx + r, cy + r, start=(-t * 65 * speed + i * 90) % 360,
-                         extent=38, style="arc", outline=bright, width=max(1, int(s * 0.010)))
+def _round_rect(c, x1, y1, x2, y2, r, **kw):
+    """A rounded rectangle on a Tk canvas (a smoothed polygon)."""
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+           x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return c.create_polygon(pts, smooth=True, **kw)
 
-        # thinking: fast scanning arc
-        if self.status in BUSY:
-            r = R * 0.66
-            c.create_arc(cx - r, cy - r, cx + r, cy + r, start=(t * 420) % 360, extent=50,
-                         style="arc", outline=bright, width=max(2, int(s * 0.02)))
 
-        # level bars around the core (voice / mic activity)
-        core = R * (0.34 + 0.08 * lv)
-        bars = 36
-        for i in range(bars):
-            a = math.radians(i * 360 / bars - t * 20)
-            wobble = 0.5 + 0.5 * math.sin(t * 7 + i * 1.7)
-            h = R * (0.03 + 0.17 * lv * wobble)
-            r1, r2 = core * 1.12, core * 1.12 + h
-            c.create_line(cx + r1 * math.cos(a), cy + r1 * math.sin(a),
-                          cx + r2 * math.cos(a), cy + r2 * math.sin(a),
-                          fill=color, width=max(1, int(s * 0.012)))
-
-        # core
-        pulse = 1 + 0.04 * math.sin(t * 3)
-        r = core * pulse
-        c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=bright, width=2, fill=dim)
-        r2 = r * 0.72
-        c.create_oval(cx - r2, cy - r2, cx + r2, cy + r2, outline="", fill=color)
-        r3 = r * 0.30
-        c.create_oval(cx - r3 - r * 0.18, cy - r3 - r * 0.2, cx + r3 - r * 0.18, cy + r3 - r * 0.2,
-                      outline="", fill=_mix(color, "#ffffff", 0.75))
+def animations_on():
+    """Windows' "Animation effects" setting (Settings, Accessibility, Visual effects). Off: the hologram stays still."""
+    if not sys.platform.startswith("win"):
+        return True
+    try:
+        import ctypes
+        on = ctypes.c_int(1)
+        SPI_GETCLIENTAREAANIMATION = 0x1042
+        if ctypes.windll.user32.SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(on), 0):
+            return bool(on.value)
+    except Exception:
+        pass
+    return True
 
 
 class HologramThread:

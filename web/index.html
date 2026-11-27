@@ -4,93 +4,110 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mirage</title>
-<link rel="stylesheet" href="style.css?v=3.0.4">
+<link rel="stylesheet" href="style.css?v=3.1.0">
 <link rel="icon" href="logo.png">
 </head>
 <body>
 <div class="setup" id="setup" hidden role="dialog" aria-modal="true" aria-labelledby="setupTitle"></div>
 <div class="setup" id="news" hidden role="dialog" aria-modal="true" aria-labelledby="newsTitle"></div>
+<div class="setup" id="scDialog" hidden role="dialog" aria-modal="true" aria-labelledby="scTitle"></div>
 <div class="app">
   <nav class="rail" aria-label="Main">
     <img class="rail-logo" src="logo.png" alt="Mirage">
-    <button class="nav" data-page="home" aria-label="Home">
-      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="5"/><circle cx="12" cy="12" r="2.2"/></svg>
-      <span>Home</span>
-    </button>
-    <button class="nav" data-page="memory" aria-label="Memory">
-      <svg viewBox="0 0 24 24"><path d="M6 4h9l3 3v13H6z"/><path d="M9 10h6M9 14h6M9 18h3"/></svg>
-      <span>Memory</span>
-    </button>
-    <button class="nav" data-page="shortcuts" aria-label="Shortcuts">
-      <svg viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>
-      <span>Shortcuts</span>
-    </button>
-    <button class="nav" data-page="settings" aria-label="Settings">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
-      <span>Settings</span>
-    </button>
-    <div class="rail-spacer"></div>
-    <button class="mic" id="micBtn" aria-label="Mute microphone" title="Mute microphone">
-      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4l16 16"/></svg>
-    </button>
+    <button class="nav" data-page="home" data-icon="home">Home</button>
+    <button class="nav" data-page="memory" data-icon="memory">Memory</button>
+    <button class="nav" data-page="skills" data-icon="skills">Skills</button>
+    <button class="nav" data-page="shortcuts" data-icon="shortcuts">Shortcuts</button>
+    <button class="nav" data-page="settings" data-icon="settings">Settings</button>
   </nav>
 
   <main class="stage">
-    <header class="topbar">
-      <div class="status" id="status"><span class="dot"></span><span id="statusText">Starting up…</span></div>
-      <div class="detail" id="statusDetail"></div>
-    </header>
-
     <!-- Home -->
-    <section class="page" id="page-home">
-      <div class="holo-wrap"><canvas id="holo" width="640" height="300"></canvas></div>
-      <div class="convo" id="convo" aria-live="polite"></div>
-      <div class="ask">
-        <input id="askInput" type="text" placeholder="Ask Mirage anything, or type a command" autocomplete="off">
-        <button class="btn gold" id="askSend">Send</button>
+    <section class="page" id="page-home" aria-label="Home">
+      <header class="home-bar">
+        <div class="status-group">
+          <div class="status" id="status" data-s="loading"><span class="dot"></span><span id="statusText">Starting up…</span></div>
+          <button class="mic" id="micBtn" aria-label="Mute the microphone" title="Mute the microphone">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4l16 16"/></svg>
+          </button>
+        </div>
+        <button class="btn quiet" id="quietBtn"></button>
+      </header>
+      <div class="home-scroll" id="homeScroll">
+        <div class="orb-wrap">
+          <div class="orb" id="orb" data-s="loading" aria-hidden="true"><i class="ring"></i><i class="core"></i></div>
+          <p class="hint" id="hint" aria-live="polite"></p>
+        </div>
+        <div class="convo" id="convo" role="log" aria-live="polite" aria-label="Conversation"></div>
       </div>
+      <footer class="home-foot">
+        <div class="chips" id="chips"></div>
+        <form class="ask" id="askForm">
+          <label class="sr" for="askInput">Message to Mirage</label>
+          <input id="askInput" type="text" placeholder="Ask Mirage anything, or type a command" autocomplete="off">
+          <button class="btn primary" type="submit">Send <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
+        </form>
+      </footer>
     </section>
 
     <!-- Memory -->
-    <section class="page" id="page-memory">
-      <div class="page-head">
-        <h1>Memory</h1>
-        <div class="head-actions">
-          <span class="muted">Kept on this PC</span>
-          <button class="btn" id="interviewBtn">Get to know me</button>
+    <section class="page" id="page-memory" aria-label="Memory">
+      <div class="page-scroll">
+        <div class="page-wrap">
+          <div class="page-head">
+            <div><h1>Memory</h1><p class="lede">Kept on this PC, in Mirage's own data.</p></div>
+            <div class="head-actions"><button class="btn" id="interviewBtn">Get to know me</button></div>
+          </div>
+          <div class="tabs" id="memTabs" role="tablist" aria-label="Memory">
+            <button role="tab" data-tab="memories">Things I remember</button>
+            <button role="tab" data-tab="chats">Past chats</button>
+            <button role="tab" data-tab="calendar">Calendar</button>
+          </div>
+          <div id="memBody" role="tabpanel"></div>
         </div>
       </div>
-      <div class="seg" id="memTabs" role="tablist">
-        <button data-tab="memories" class="on">Things I remember</button>
-        <button data-tab="todos">To-do</button>
-        <button data-tab="reminders">Reminders</button>
-        <button data-tab="chats">Past chats</button>
-      </div>
-      <div class="adder" id="memAdder">
-        <input id="memInput" type="text" autocomplete="off">
-        <button class="btn gold" id="memAdd">Add</button>
-      </div>
-      <ul class="list" id="memList"></ul>
+    </section>
+
+    <!-- Skills -->
+    <section class="page" id="page-skills" aria-label="Skills">
+      <div class="page-scroll"><div class="page-wrap" id="skillsBox"></div></div>
     </section>
 
     <!-- Shortcuts -->
-    <section class="page" id="page-shortcuts">
-      <div class="page-head"><h1>Shortcuts</h1></div>
-      <p class="lede">Shortcuts run instantly and never use Claude. Say “mirage” and then the phrase.</p>
-      <div id="shortcutBlocks"></div>
+    <section class="page" id="page-shortcuts" aria-label="Shortcuts">
+      <div class="page-scroll">
+        <div class="page-wrap">
+          <div class="page-head">
+            <div><h1>Shortcuts</h1><p class="lede">Say “mirage” and then the phrase. Shortcuts run straight away and never use the brain.</p></div>
+            <button class="btn primary" id="newShortcut"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New shortcut</button>
+          </div>
+          <div id="shortcutBlocks" style="display: contents"></div>
+        </div>
+      </div>
     </section>
 
     <!-- Settings -->
-    <section class="page" id="page-settings">
-      <div class="page-head"><h1>Settings</h1><span class="saved" id="saved"></span></div>
-      <div class="settings">
-        <aside class="sublist" id="settingsNav"></aside>
-        <div class="panel" id="settingsPanel"></div>
+    <section class="page" id="page-settings" aria-label="Settings">
+      <div class="page-scroll" id="settingsScroll">
+        <div class="page-wrap">
+          <div class="page-head">
+            <h1>Settings</h1>
+            <div class="search">
+              <label class="sr" for="settingsSearch">Search settings</label>
+              <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="settingsSearch" type="search" placeholder="Search settings" autocomplete="off">
+            </div>
+          </div>
+          <div class="settings">
+            <nav class="groups" id="settingsNav" aria-label="Setting groups"></nav>
+            <div class="panel" id="settingsPanel"></div>
+          </div>
+        </div>
       </div>
     </section>
   </main>
 </div>
-<div class="toast" id="toast" role="status"></div>
-<script src="app.js?v=3.0.4"></script>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js?v=3.1.0"></script>
 </body>
 </html>
