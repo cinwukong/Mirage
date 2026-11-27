@@ -237,9 +237,15 @@ def apply(repo_name: str, progress=lambda message, done=None: None) -> list:
     if not z:
         raise UpdateError("The release is missing its app file.")
     progress("Downloading update…", 0.08)
-    size = m["size"]
-    blob = _download_asset(z, size, on_bytes=lambda got: progress(
-        f"Downloading update… {got / 1e6:.1f} of {size / 1e6:.1f} MB", 0.08 + 0.37 * min(1.0, got / size)))
+    size, shown = m["size"], [-1]
+
+    def downloaded(got):  # tell the page at most once per whole percent
+        pct = int(100 * min(1.0, got / size))
+        if pct != shown[0]:
+            shown[0] = pct
+            progress(f"Downloading update… {got / 1e6:.1f} of {size / 1e6:.1f} MB", 0.08 + 0.37 * pct / 100)
+
+    blob = _download_asset(z, size, on_bytes=downloaded)
     if len(blob) != m["size"] or hashlib.sha256(blob).hexdigest() != m["sha256"]:
         raise UpdateError("The download doesn't match its checksum, so it wasn't installed.")
     progress("Checking the new version…", 0.5)

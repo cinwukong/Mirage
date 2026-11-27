@@ -211,6 +211,14 @@ class Hologram:
                            now=time.time())
         self._keep_for_caption()
 
+    def caption_stop(self):
+        """You talked over Mirage: the subtitle stops where the voice did and goes away soon."""
+        if self.captions:
+            self.captions.stop(now=time.time())
+            self.sub_until = self.captions.done_at
+            if self.hide_at is not None:
+                self.hide_at = min(self.hide_at, self.sub_until)
+
     def caption_spoken(self, text, index):
         if self.captions:
             self.captions.spoken(text, index, now=time.time())

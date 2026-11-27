@@ -15,8 +15,8 @@ LINGER = 1.5          # seconds the last piece stays after it has been said or r
 WAIT_FOR_VOICE = 6.0  # following the voice but it never started: carry on at speaking pace
 
 
-def _split_default(text):
-    from speech import split_sentences
+def _split(text):
+    from speech import split_sentences  # the same pieces the voice says one at a time
     return split_sentences(text)
 
 
@@ -44,17 +44,18 @@ def wrap(text, measure, width):
 
 
 def reading_time(piece):
+    """Seconds to read a piece: about 20 characters a second, and never under a second."""
     return 1.2 + 0.05 * len(piece)
 
 
 def speaking_time(piece, wpm):
+    """Seconds to say a piece at wpm words a minute, plus the pause after it."""
     return len(piece.split()) * 60.0 / max(60.0, wpm) + 0.35
 
 
 class Captions:
-    def __init__(self, measure, width, rows=ROWS, split=None):
+    def __init__(self, measure, width, rows=ROWS):
         self.measure, self.width, self.rows = measure, width, rows
-        self.split = split or _split_default
         self.text = ""
         self.pieces, self.layout = [], []   # layout: [(piece index, line text)]
         self.current = 0
@@ -71,8 +72,10 @@ class Captions:
     def show(self, text, who="mirage", follow_voice=False, wpm=165, now=0.0):
         """A new reply (or "you" line). follow_voice: Mirage is about to say it, so wait for spoken() or started();
         otherwise it runs at reading pace."""
+        if not (text or "").strip():
+            return self.clear()
         self.text = text
-        self.pieces = [f"You: {text}"] if who == "you" else (self.split(text) or [text])
+        self.pieces = [f"You: {text}"] if who == "you" else (_split(text) or [text])
         self.layout = [(i, line) for i, piece in enumerate(self.pieces) for line in wrap(piece, self.measure, self.width)]
         self.current, self.offset, self._voice = 0, 0.0, False
         follow_voice = follow_voice and who != "you"
@@ -95,15 +98,25 @@ class Captions:
         self.done_at = now + sum(self._durations[index:]) + LINGER
 
     def started(self, text, now=0.0):
-        """The voice has started saying all of `text` at once and won't say where it is: go at speaking pace."""
-        if text == self.text and not self._voice:
-            self._run_clock(now)
+        """A voice has started saying `text` (or the rest of it, if Mirage's own voice failed part way and another
+        took over) and won't say where it is: go on at speaking pace from the piece shown now."""
+        if text == self.text and self.pieces:
+            self._voice = False
+            self._run_clock(now, self.current)
 
-    def _run_clock(self, now):
+    def stop(self, now=0.0):
+        """You talked over Mirage: stay on the piece it got to, and go away soon."""
+        if self.pieces:
+            self._times, self._voice = None, True
+            self.done_at = now + LINGER
+
+    def _run_clock(self, now, start=0):
+        """Pieces from `start` on follow each other by their durations from now; earlier ones are already shown."""
         times, t = [], now
-        for d in self._durations:
-            times.append(t)
-            t += d
+        for i, d in enumerate(self._durations):
+            times.append(t if i >= start else now - 1.0)
+            if i >= start:
+                t += d
         self._times = times
         self.done_at = t + LINGER
 
@@ -132,6 +145,8 @@ class Captions:
 
     def _target(self, now):
         rows = [k for k, (i, _) in enumerate(self.layout) if i == self.current]
+        if not rows:  # nothing to show for this piece: stay where we are
+            return self.offset
         first, last = rows[0], rows[-1] + 1
         if last - first <= self.rows:  # the piece fits: it sits at the bottom, the one before above it
             return float(max(0, last - self.rows))

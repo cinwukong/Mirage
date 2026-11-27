@@ -47,6 +47,14 @@ class Report(unittest.TestCase):
         self.assertNotIn("Svensson", self.text)
         self.assertIn(r"~\AppData\Local\Mirage\brain", self.text)
 
+    def test_a_reply_over_several_lines_is_left_out_entirely(self):
+        log = ("[10:00:00] MIRAGE: Here's your list:\nbuy flowers for Emma\ncall the clinic about the results\n"
+               "[10:00:05] Speech failed to load:\nTraceback (most recent call last):\nRuntimeError: no model\n")
+        text = diagnostics.report({}, log, home=HOME)
+        self.assertNotIn("flowers", text)
+        self.assertNotIn("clinic", text)
+        self.assertIn("RuntimeError: no model", text)  # an error's traceback lines still come through
+
     def test_keys_are_hidden(self):
         self.assertNotIn("AbCdEf123456789", self.text)
 

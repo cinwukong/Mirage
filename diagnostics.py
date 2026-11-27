@@ -27,6 +27,14 @@ def _looks_like_path(s: str) -> bool:
     return bool(re.match(r"^[a-zA-Z]:\\|^\\\\|^~\\", s)) or ("\\" in s and s.lower().endswith((".py", ".dll", ".exe", ".onnx", ".gguf")))
 
 
+def _redact_numbers(text: str) -> str:
+    try:
+        from skills import redact  # card, account and ID numbers
+        return redact(text)
+    except Exception:  # if that can't run, hide every long number rather than let one through
+        return re.sub(r"\d(?:[ -]?\d){7,}", "[number hidden]", text)
+
+
 def clean_line(line: str, home: str) -> str:
     """One log line with the private parts taken out."""
     if home:
@@ -43,13 +51,21 @@ def clean_line(line: str, home: str) -> str:
             body = f"{t.group(1)} (details left out)"
         else:  # quoted text is what was heard, said, typed or a window's title; file paths stay (errors need them)
             body = _QUOTED.sub(lambda q: q.group(0) if _looks_like_path(q.group(0)[1:-1]) else "'…'", body)
-    body = _KEYS.sub("[key hidden]", body)
-    try:
-        from skills import redact  # card, account and ID numbers
-        body = redact(body)
-    except Exception:
-        pass
-    return stamp + body
+    return stamp + _redact_numbers(_KEYS.sub("[key hidden]", body))
+
+
+def clean_log(lines, home: str) -> list:
+    """Log lines cleaned. A log entry can run over several lines (a reply with line breaks, a traceback): the
+    follow-on lines of a private entry are left out with it; those of an error stay, cleaned."""
+    out, private = [], True  # lines before the first time-stamped one may be the end of something private
+    for line in lines:
+        m = _STAMP.match(line)
+        if m:
+            private = bool(_PRIVATE.match(m.group(2)) or _TOOL.match(m.group(2)))
+            out.append(clean_line(line, home))
+        elif not private:
+            out.append(clean_line(line, home))
+    return out
 
 
 def report(info: dict, log_text: str, home: str = None) -> str:
@@ -57,8 +73,8 @@ def report(info: dict, log_text: str, home: str = None) -> str:
     home = str(Path.home()) if home is None else home
     head = ["Mirage diagnostic report (what you said, Mirage's replies and your name are left out)", ""]
     head += [f"{k}: {clean_line(str(v), home)}" for k, v in info.items()]
-    lines = (log_text or "").splitlines()[-LOG_LINES:]
-    return "\n".join(head + ["", f"Log (last {len(lines)} lines):"] + [clean_line(line, home) for line in lines]) + "\n"
+    lines = clean_log((log_text or "").splitlines()[-LOG_LINES:], home)
+    return "\n".join(head + ["", f"Log (last {len(lines)} lines):"] + lines) + "\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -165,8 +181,8 @@ def graphics() -> list:
     nv = _nvidia_memory()
     out = []
     for name, gb in dict(cards).items():
-        used = next((u for n, (t, u) in nv.items() if n.lower() in name.lower() or name.lower() in n.lower()), None)
-        total = next((t for n, (t, u) in nv.items() if n.lower() in name.lower() or name.lower() in n.lower()), None)
+        total, used = next(((t, u) for n, (t, u) in nv.items()
+                            if n.lower() in name.lower() or name.lower() in n.lower()), (None, None))
         gb = total or gb
         text = name + (f", {gb:.1f} GB" if gb else "")
         if used is not None:

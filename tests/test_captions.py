@@ -102,6 +102,31 @@ class FollowingTheVoice(unittest.TestCase):
         self.assertGreater(c.done_at, 2.0 + len(LONG.split()) * 60 / 180)
 
 
+class Interruptions(unittest.TestCase):
+    def test_talking_over_mirage_stops_the_subtitles_moving_on(self):
+        c = make()
+        c.show(LONG, follow_voice=True, now=0.0)
+        c.spoken(LONG, 1, now=1.0)
+        c.stop(now=2.0)
+        run(c, 2.0, 20.0)
+        self.assertEqual(c.current, 1)       # stays where the voice was cut off
+        self.assertLess(c.done_at, 5.0)      # and goes away soon after
+
+    def test_falling_back_to_another_voice_part_way_carries_on_from_there(self):
+        c = make()
+        c.show(LONG, follow_voice=True, now=0.0)
+        c.spoken(LONG, 0, now=0.5)
+        c.started(LONG, now=3.0)             # Mirage's voice failed; the Windows voice says the rest
+        run(c, 3.0, 120.0, step=0.5)
+        self.assertEqual(c.current, len(c.pieces) - 1)
+
+    def test_blank_text_shows_nothing_and_never_breaks(self):
+        c = make()
+        c.show("   ", now=0.0)
+        c.tick(0.1)
+        self.assertEqual(c.lines(), [])
+
+
 class SubtitlesOnly(unittest.TestCase):
     def test_reading_pace_moves_on_by_itself(self):
         c = make()

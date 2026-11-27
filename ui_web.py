@@ -195,21 +195,21 @@ class Bridge:
         a = self._app
         e = a.engine
 
+        def tell(text, how):
+            a.push("progress", ["micTest", text, how])
+
         def work():
             if e.mic_muted:
-                a.push("progress", ["micTest", "The microphone is muted in Mirage: unmute it first.", "bad"])
-                return
-            a.push("progress", ["micTest", "Listening for 4 seconds: say something…", "wait"])
+                return tell("The microphone is muted in Mirage: unmute it first.", "bad")
+            tell("Listening for 4 seconds: say something…", "wait")
             samples = e.record(4.0)
             if not samples:
-                a.push("progress", ["micTest", "No sound came in at all. Check the microphone is plugged in and "
-                                               "picked under Listening.", "bad"])
-                return
+                return tell("No sound came in at all. Check the microphone is plugged in and picked under Listening.",
+                            "bad")
             peak = max(abs(min(samples)), abs(max(samples)))
             if peak < 0.02:
-                a.push("progress", ["micTest", "It's almost silent. Pick another microphone, or turn its volume up "
-                                               "in Windows' sound settings.", "bad"])
-                return
+                return tell("It's almost silent. Pick another microphone, or turn its volume up in Windows' sound "
+                            "settings.", "bad")
             loud = "quiet but usable" if peak < 0.1 else "a good level" if peak < 0.9 else "very loud (it may distort)"
             heard = ""
             if e.speech.ready():
@@ -220,7 +220,7 @@ class Bridge:
                     M.log(f"Microphone test: couldn't write it down: {ex}")
             text = f"The sound came in at {loud}." + (f" I heard: “{heard}”" if heard else
                                                       " I didn't make out any words." if e.speech.ready() else "")
-            a.push("progress", ["micTest", text, "ok"])
+            tell(text, "ok")
         threading.Thread(target=work, daemon=True).start()
 
     def poll(self):
@@ -654,6 +654,8 @@ class App:
         if kind == "speech_started":  # the voice started a whole reply and won't say where it is
             self.holo.call("caption_started", data)
             return
+        if kind == "interrupted":  # you talked over Mirage
+            self.holo.call("caption_stop")
         if kind == "status":
             self.holo.call("set_status", data[0])
             if data[0] == "acting" and data[1]:
