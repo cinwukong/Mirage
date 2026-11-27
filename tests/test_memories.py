@@ -80,6 +80,74 @@ class Facts(unittest.TestCase):
         self.assertEqual(again.todos(), ["buy milk"])
 
 
+class Robustness(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.m = Memories(self.dir / "memory.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_two_threads_saving_the_same_fact_keep_it_once(self):
+        import threading
+        go = threading.Barrier(8)
+
+        def save():
+            go.wait()
+            self.m.remember("my dog is called Bruno")
+        threads = [threading.Thread(target=save) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(len(self.m.facts()), 1)
+
+    def test_old_facts_about_you_are_never_forgotten_by_the_brain(self):
+        self.m.remember("my name is Luca", topic="Me", t=1.0)
+        for i in range(450):
+            self.m.remember(f"the project note number {i} is done", topic="Projects", t=2.0 + i)
+        self.assertIn("my name is Luca", [f["text"] for f in self.m.me_facts()])
+        self.assertIsNotNone(self.m.find_fact("my name is Luca"))
+
+    def test_a_database_that_fails_to_open_once_doesnt_lock_mirage_up(self):
+        import sqlite3
+        import memories
+        real = sqlite3.connect
+        calls = {"n": 0}
+
+        def flaky(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("database is locked (test)")
+            return real(*a, **k)
+        memories.sqlite3.connect = flaky
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self.m.facts()
+        finally:
+            memories.sqlite3.connect = real
+        import threading
+        done = []
+        t = threading.Thread(target=lambda: done.append(self.m.remember("my dog is called Bruno")), daemon=True)
+        t.start()
+        t.join(5)  # another thread (the worker, the page) must still get in
+        self.assertEqual(done, [True])
+
+    def test_hand_written_lines_in_old_notes_come_across_too(self):
+        notes = self.dir / "notes"
+        notes.mkdir()
+        (notes / "Memory.md").write_text("# Mirage memory\n\n- my cat is called Sixten\n", encoding="utf-8")
+        self.assertEqual(self.m.import_notes([notes]), (1, 0))
+
+    def test_a_vault_setting_pointing_inside_the_vault_still_finds_the_notes(self):
+        import memories
+        vault = self.dir / "Vault"
+        (vault / ".obsidian").mkdir(parents=True)
+        (vault / "Mirage").mkdir()
+        (vault / "Projects" / "Games").mkdir(parents=True)
+        self.assertIn(vault / "Mirage", memories.old_note_folders(str(vault / "Projects" / "Games"), self.dir, self.dir))
+
+
 class Todos(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())

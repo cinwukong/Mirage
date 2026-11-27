@@ -875,20 +875,21 @@ class Engine:
 
     def _import_old_notes(self):
         """Older versions kept memories and to-dos as markdown notes. Bring them into Mirage's memory, once; the
-        notes are left where they are. Looked for: the Obsidian vault you picked, Documents\\Mirage, and the
-        "memory" folder Mirage used before 3.0."""
-        folders = []
-        vault = (self.cfg.get("vault_path") or "").strip()
-        if vault:
-            p = Path(vault)
-            p = p.parent if p.name == ".obsidian" else p
-            folders += [p / "Mirage", p]
-        folders += [paths.NOTES / "Mirage", BASE_DIR / "memory" / "Mirage", BASE_DIR / "memory"]
+        notes are left where they are (see memories.old_note_folders for where it looks)."""
+        import memories
         try:
-            facts, todos = self.memory.import_notes(folders)
+            facts, todos = self.memory.import_notes(
+                memories.old_note_folders(self.cfg.get("vault_path"), paths.NOTES, BASE_DIR))
         except Exception as e:
             log(f"Couldn't bring in the old notes: {e}")
             return
+        if any(k in self.cfg for k in ("vault_path", "daily_log")):  # settings for notes that no longer exist
+            for k in ("vault_path", "daily_log"):
+                self.cfg.pop(k, None)
+            try:
+                save_config(self.cfg)
+            except Exception as e:
+                log(f"Couldn't save settings: {e}")
         if facts or todos:
             log(f"Brought {facts} memories and {todos} to-dos from your old notes into Mirage's memory.")
             self.emit("system", f"I moved what I remember ({facts}) and your to-do list ({todos}) from your notes into "

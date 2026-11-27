@@ -10,32 +10,56 @@ import re
 import sqlite3
 import threading
 import time
-from contextlib import closing
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-ME = ("me", "user", "the user", "myself", "i")
+ME = {"me", "user", "the user", "myself", "i"}
+ADDED, KNOWN, REFUSED = 1, 0, -1
 
 
 def _skills():
-    import skills
+    import skills  # imported when first needed: skills is a big module and only its text helpers are used here
     return skills
 
 
-def _keys(text: str, drop_short=True) -> set:
+def _words(text: str) -> list:
+    """The words of a text that carry meaning (no "the", "my", "please"...)."""
     sk = _skills()
-    return {sk._stem(w) for w in re.findall(r"[a-z0-9']+", (text or "").lower())
-            if w not in sk.STOPWORDS and (len(w) > 2 or not drop_short)}
+    return [w for w in re.findall(r"[a-z0-9']+", (text or "").lower()) if w not in sk.STOPWORDS]
+
+
+def _keys(text: str, drop_short=True) -> set:
+    """Word stems for matching ("games" finds "game")."""
+    stem = _skills()._stem
+    return {stem(w) for w in _words(text) if len(w) > 2 or not drop_short}
 
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().rstrip(".").strip()
 
 
+def old_note_folders(vault_path, notes_dir, app_dir) -> list:
+    """Where older versions may have written Memory.md and To-do.md: the Obsidian vault picked in Settings (its
+    Mirage folder; a setting that pointed inside the vault still finds it), Documents\\Mirage, and the "memory"
+    folder Mirage used before 3.0."""
+    folders = []
+    if (vault_path or "").strip():
+        p = Path(vault_path.strip())
+        p = p.parent if p.name == ".obsidian" else p
+        for parent in [p, *p.parents]:  # the vault is the folder with Obsidian's settings in it
+            if (parent / ".obsidian").is_dir():
+                p = parent
+                break
+        folders += [p / "Mirage", p]
+    folders += [Path(notes_dir) / "Mirage", Path(app_dir) / "memory" / "Mirage", Path(app_dir) / "memory"]
+    return folders
+
+
 class Memories:
     def __init__(self, path):
         self.path = Path(path)
-        self.lock = threading.RLock()  # one writer at a time (the worker, the learner and the page all use it)
+        self.lock = threading.RLock()  # one at a time: the worker, the learner and the Memory page all use it
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY, t REAL, text TEXT, topic TEXT, "
@@ -43,66 +67,71 @@ class Memories:
             db.execute("CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, t REAL, text TEXT, done INTEGER DEFAULT 0)")
             db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
+    @contextmanager
     def _db(self):
-        """A connection that commits and closes when the block ends."""
-        lock, path = self.lock, self.path
+        """A connection, used by one caller at a time, that commits and closes when the block ends (the lock is let
+        go even if the database can't be opened)."""
+        with self.lock:
+            db = sqlite3.connect(str(self.path), timeout=10)
+            try:
+                db.row_factory = sqlite3.Row
+                yield db
+                db.commit()
+            finally:
+                db.close()
 
-        class _Conn:
-            def __enter__(self):
-                lock.acquire()
-                self.db = sqlite3.connect(str(path), timeout=10)
-                self.db.row_factory = sqlite3.Row
-                return self.db
-
-            def __exit__(self, kind, *rest):
-                try:
-                    if kind is None:
-                        self.db.commit()
-                    self.db.close()
-                finally:
-                    lock.release()
-        return _Conn()
+    @staticmethod
+    def _fact(r) -> dict:
+        return {"id": r["id"], "when": datetime.fromtimestamp(r["t"]).strftime("%Y-%m-%d %H:%M"), "text": r["text"],
+                "topic": r["topic"], "noticed": bool(r["noticed"])}
 
     # ---- facts ----
     def _topic_for(self, fact, topic):
+        known = {x.lower(): x for x in self.topics()}
         if topic:
             t = topic.strip()
-            if t.lower() in ME:
-                return "Me"
-            known = {x.lower(): x for x in self.topics()}
-            return known.get(t.lower()) or _skills().topic_title(t)
-        return _skills().fact_subject(fact, {x.lower(): x for x in self.topics()})
+            return "Me" if t.lower() in ME else known.get(t.lower()) or _skills().topic_title(t)
+        return _skills().fact_subject(fact, known)
+
+    def _add_fact(self, fact: str, topic=None, noticed=False, t=None) -> int:
+        """ADDED, KNOWN (the same fact is already kept) or REFUSED (a secret, or nothing)."""
+        sk = _skills()
+        fact = _norm(sk.redact(fact))
+        if not fact or sk.SECRET_FACT.search(fact):
+            return REFUSED
+        with self._db() as db:  # the check and the save together, so two threads can't both save it
+            if db.execute("SELECT 1 FROM facts WHERE lower(text) = lower(?)", (fact,)).fetchone():
+                return KNOWN
+            db.execute("INSERT INTO facts (t, text, topic, noticed) VALUES (?, ?, ?, ?)",
+                       (t or time.time(), fact, self._topic_for(fact, topic), int(bool(noticed))))
+        return ADDED
 
     def remember(self, fact: str, topic: str = None, noticed: bool = False, t: float = None) -> bool:
         """Keep a fact. topic: who or what it's about ("Me", "Emma"), worked out when not given. noticed: Mirage
         picked it up from a conversation rather than being told. False if it was refused (passwords, codes, card
         numbers are never kept); saying the same thing twice keeps it once."""
-        sk = _skills()
-        fact = _norm(sk.redact(fact))
-        if not fact or sk.SECRET_FACT.search(fact):
-            return False
-        if any(f["text"].lower() == fact.lower() for f in self.facts(10000)):
-            return True
-        topic = self._topic_for(fact, topic)  # reads the database itself, so before the connection below
-        with self._db() as db:
-            db.execute("INSERT INTO facts (t, text, topic, noticed) VALUES (?, ?, ?, ?)",
-                       (t or time.time(), fact, topic, int(bool(noticed))))
-        return True
+        return self._add_fact(fact, topic, noticed, t) != REFUSED
 
     def facts(self, limit=400) -> list:
-        """Everything remembered, oldest first: [{id, when, text, topic, noticed}]."""
+        """What's remembered, oldest first: [{id, when, text, topic, noticed}]. limit: the newest so many (None: all)."""
         with self._db() as db:
-            rows = db.execute("SELECT * FROM (SELECT * FROM facts ORDER BY t DESC, id DESC LIMIT ?) ORDER BY t, id",
-                              (limit,)).fetchall()
-        return [{"id": r["id"], "when": datetime.fromtimestamp(r["t"]).strftime("%Y-%m-%d %H:%M"), "text": r["text"],
-                 "topic": r["topic"], "noticed": bool(r["noticed"])} for r in rows]
+            if limit is None:
+                rows = db.execute("SELECT * FROM facts ORDER BY t, id").fetchall()
+            else:
+                rows = db.execute("SELECT * FROM (SELECT * FROM facts ORDER BY t DESC, id DESC LIMIT ?) ORDER BY t, id",
+                                  (limit,)).fetchall()
+        return [self._fact(r) for r in rows]
 
     def topics(self) -> list:
         with self._db() as db:
             return [r[0] for r in db.execute("SELECT DISTINCT topic FROM facts WHERE topic IS NOT NULL AND topic != ''")]
 
     def me_facts(self, limit=30) -> list:
-        return [f for f in self.facts() if f["topic"] == "Me"][-limit:]
+        """The newest facts about you yourself, oldest first."""
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM (SELECT * FROM facts WHERE topic = 'Me' ORDER BY t DESC, id DESC LIMIT ?) "
+                              "ORDER BY t, id", (limit,)).fetchall()
+        return [self._fact(r) for r in rows]
 
     def relevant_facts(self, query: str, limit=8, skip=()) -> list:
         """Remembered facts that share words with a question, best first."""
@@ -110,7 +139,7 @@ class Memories:
         if not keys:
             return []
         scored = []
-        for f in self.facts():
+        for f in self.facts(None):
             if f["id"] in skip:
                 continue
             hits = len(keys & _keys(f["text"] + " " + (f["topic"] or ""), drop_short=False))
@@ -123,7 +152,7 @@ class Memories:
         """The remembered fact that best matches some wording (for corrections), or None."""
         want = _keys(text, drop_short=False)
         best, best_score = None, 0.0
-        for f in self.facts():
+        for f in self.facts(None):
             have = _keys(f["text"], drop_short=False)
             if want and have:
                 score = len(want & have) / len(want | have)
@@ -142,11 +171,10 @@ class Memories:
 
     def forget(self, words: str) -> int:
         """Forget the facts that contain all of the given words. Returns how many."""
-        sk = _skills()
-        keys = [w for w in re.findall(r"[a-z0-9']+", words.lower()) if w not in sk.STOPWORDS]
+        keys = _words(words)
         if not keys:
             return 0
-        gone = [f["id"] for f in self.facts(10000) if all(k in f["text"].lower() for k in keys)]
+        gone = [f["id"] for f in self.facts(None) if all(k in f["text"].lower() for k in keys)]
         with self._db() as db:
             db.executemany("DELETE FROM facts WHERE id = ?", [(i,) for i in gone])
         return len(gone)
@@ -177,8 +205,7 @@ class Memories:
 
     def complete_todo(self, words: str):
         """Check off the open to-do that best matches the words. Returns its text, or None."""
-        sk = _skills()
-        keys = [w for w in re.findall(r"[a-z0-9']+", words.lower()) if w not in sk.STOPWORDS]
+        keys = _words(words)
         if not keys:
             return None
         best, best_hits = None, 0
@@ -199,7 +226,7 @@ class Memories:
         keys = _keys(query, drop_short=False)
         if not keys:
             return []
-        items = [("Memory", f["text"]) for f in self.facts()] + [("To-do", text) for i, text, d in self.todo_entries()]
+        items = [("Memory", f["text"]) for f in self.facts(None)] + [("To-do", text) for i, text, d in self.todo_entries()]
         scored = []
         for source, text in items:
             hits = len(keys & _keys(text, drop_short=False))
@@ -224,16 +251,14 @@ class Memories:
             if mem.is_file() and mem.resolve() not in seen:
                 seen.add(mem.resolve())
                 for line in mem.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    if not re.match(r"^\s*- \d{4}-\d{2}-\d{2} \d{2}:\d{2} ", line):
-                        continue
+                    if not re.match(r"^\s*[-*] \S", line) or re.match(r"^\s*[-*] \[[ xX]\]", line):
+                        continue  # memories are list lines, with or without the date Mirage wrote
                     f = sk.parse_fact(line)
-                    text = _norm(f["text"])
                     try:
-                        t = datetime.strptime(f["when"], "%Y-%m-%d %H:%M").timestamp()
+                        t = datetime.strptime(f["when"], "%Y-%m-%d %H:%M").timestamp() if f["when"] else None
                     except ValueError:
                         t = None
-                    before = len(self.facts(10000))
-                    if text and self.remember(text, f["topic"], f["noticed"], t) and len(self.facts(10000)) > before:
+                    if self._add_fact(_norm(f["text"]), f["topic"], f["noticed"], t) == ADDED:
                         n_facts += 1
             if todo.is_file() and todo.resolve() not in seen:
                 seen.add(todo.resolve())
