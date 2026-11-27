@@ -38,14 +38,7 @@ LOG_PATH = DATA_DIR / "mirage.log"
 SYSTEM = platform.system()  # "Windows", "Darwin", "Linux"
 SAMPLE_RATE = 16000
 INSTANCE_PORT = 47613
-
-# Updates come from this GitHub repository ("owner/name"). Can be changed in config.json.
-UPDATE_REPO = "cinwukong/Mirage"
-UPDATE_BRANCH = "main"
-# Files and folders on this PC that an update must never overwrite or delete
-KEEP_ON_UPDATE = {"config.json", "model", "mirage.log", "mirage.ico", "__pycache__", ".git", "model.zip",
-                  "memory", "reminders.json", ".webview", "voices", "voice_model", "voice_cache", "speech",
-                  ".github", "installer"}  # the last two are for building the installer, not for running Mirage
+# Updates: see updater.py (signed GitHub releases only, installed with a way back).
 
 
 def read_version() -> str:
@@ -178,8 +171,8 @@ DEFAULT_CONFIG = {
     "setup_done": True,                  # the first-run setup has been shown (new installs start with False)
     "anthropic_api_key": "",
     "anthropic_model": "claude-haiku-5-5",
-    "update_repo": "",             # "" = use UPDATE_REPO
-    "github_token": "",            # read-only key, needed because the repo is private
+    "update_repo": "",             # "" = use updater.UPDATE_REPO
+    "github_token": "",            # read-only key, only needed if the repository is private
     "check_updates_on_start": True,
     "websites": {
         "youtube": "https://www.youtube.com",
@@ -677,13 +670,24 @@ class Actions:
         return f"Here's {query} on YouTube."
 
     def open_app(self, name: str) -> str:
-        apps = {k.lower(): v for k, v in self.cfg["apps"].get(SYSTEM, {}).items()}
+        """Start an app by name. "" when there's no app by that name, so the brain (or "add it on the Shortcuts
+        page") takes over. Never goes through the command shell: see apps.py."""
+        configured = {k.lower(): v for k, v in self.cfg["apps"].get(SYSTEM, {}).items()}
         key = name.lower().strip()
-        target = apps.get(key)
+        if SYSTEM == "Windows":
+            import apps
+            target = apps.find(key, configured)
+            if not target:
+                return ""
+            try:
+                apps.start(target)
+                return f"Opening {name}."
+            except OSError as e:
+                log(f"open_app failed for {name!r}: {e}")
+                return f"I couldn't open {name}. You can fix it under Shortcuts in the app."
+        target = configured.get(key)
         try:
-            if SYSTEM == "Windows":
-                subprocess.Popen(f'start "" "{target or key}"', shell=True)
-            elif SYSTEM == "Darwin":
+            if SYSTEM == "Darwin":
                 subprocess.Popen(["open", "-a", target or name])
             else:
                 subprocess.Popen([target or key])
@@ -747,7 +751,7 @@ class Actions:
 
     def lock(self) -> str:
         if SYSTEM == "Windows":
-            subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
         elif SYSTEM == "Darwin":
             subprocess.Popen(["pmset", "displaysleepnow"])
         else:
@@ -846,8 +850,8 @@ class Engine:
         self._restart_audio = threading.Event()
         self.cmd_q: "queue.Queue" = queue.Queue()
         self._wake_cache = (None, None)
-        global GITHUB_TOKEN
-        GITHUB_TOKEN = (self.cfg.get("github_token") or "").strip()
+        import updater
+        updater.TOKEN = (self.cfg.get("github_token") or "").strip()
         import skills
         self.skills = skills
         try:
@@ -1160,8 +1164,8 @@ class Engine:
         if "weather_city" in changes:
             self.cfg["weather_location"] = None
         if "github_token" in changes:
-            global GITHUB_TOKEN
-            GITHUB_TOKEN = (changes["github_token"] or "").strip()
+            import updater
+            updater.TOKEN = (changes["github_token"] or "").strip()
 
     COMMON_LINES = ["Mirage online.", "Yes?", "Done.", "Playing.", "Paused.", "Got it. I'll remember that.",
                     "Hello. This is how I sound.", "It's already playing.", "It's already paused.", "Here I am.",
@@ -1595,8 +1599,8 @@ class Engine:
             return "Opening it."
         try:
             if SYSTEM == "Windows":
-                os.startfile(target) if (Path(target).exists() or ":" in target) else \
-                    subprocess.Popen(f'start "" "{target}"', shell=True)
+                import apps
+                apps.start(target)  # your own shortcut: a program, file, folder or link, started as you entered it
             else:
                 subprocess.Popen(["xdg-open", target])
             return "Opening it."
@@ -1958,103 +1962,6 @@ BUILTIN_GROUPS = [
     ("facts", "Quick facts (when there's no brain)", ["who is Ada Lovelace"]),
 ]
 
-
-# --------------------------------------------------------------------------- #
-# Updates from GitHub
-# --------------------------------------------------------------------------- #
-def _version_tuple(v: str):
-    return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
-
-
-GITHUB_TOKEN = ""  # set from config by the app/engine
-
-
-def _github_get(url: str, timeout=15, accept="application/vnd.github+json") -> bytes:
-    """GET from GitHub. Uses the saved key if there is one; if GitHub rejects it, tries again
-    without it (works for public repositories)."""
-    import urllib.error
-    import urllib.request
-
-    def fetch(with_key):
-        headers = {"User-Agent": "Mirage-updater", "Accept": accept}
-        if with_key:
-            headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
-            return r.read()
-
-    if not GITHUB_TOKEN:
-        return fetch(False)
-    try:
-        return fetch(True)
-    except urllib.error.HTTPError as e:
-        if e.code not in (401, 403, 404):
-            raise
-        log(f"GitHub rejected the saved key (HTTP {e.code}); trying without it.")
-        return fetch(False)
-
-
-def update_repo(cfg: dict) -> str:
-    return (cfg.get("update_repo") or UPDATE_REPO or "").strip().strip("/")
-
-
-def check_for_update(repo: str):
-    """Returns (latest_version or None, newer: bool, error_text)."""
-    import urllib.error
-    if not repo:
-        return None, False, "Updates aren't set up yet (no GitHub repository)."
-    try:
-        latest = _github_get(f"https://api.github.com/repos/{repo}/contents/version.txt?ref={UPDATE_BRANCH}",
-                             accept="application/vnd.github.raw").decode("utf-8").strip()
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403, 404):
-            if not GITHUB_TOKEN:
-                return None, False, "Can't see the Mirage repo. If it's private, paste your GitHub key below."
-            return None, False, f"GitHub refused the key (error {e.code}). Clear it and paste it again."
-        return None, False, f"Couldn't check GitHub (error {e.code})."
-    except Exception as e:
-        return None, False, f"Couldn't reach GitHub ({e.__class__.__name__})."
-    return latest, _version_tuple(latest) > _version_tuple(read_version()), ""
-
-
-def apply_update(repo: str, progress=lambda msg: None) -> list:
-    """Download the repository and copy its files over this folder. Returns changed file names."""
-    import io
-    import shutil
-    import tempfile
-    progress("Downloading update…")
-    data = _github_get(f"https://api.github.com/repos/{repo}/zipball/{UPDATE_BRANCH}", timeout=120)
-    changed = []
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            for name in z.namelist():  # refuse paths that try to escape the folder
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise RuntimeError(f"Unsafe path in update: {name}")
-            z.extractall(tmp)
-        roots = [p for p in tmp.iterdir() if p.is_dir()]
-        if len(roots) != 1 or not (roots[0] / "mirage.py").exists():
-            raise RuntimeError("The download doesn't look like Mirage.")
-        root = roots[0]
-        progress("Installing update…")
-        for src in root.rglob("*"):
-            rel = src.relative_to(root)
-            if rel.parts[0] in KEEP_ON_UPDATE or src.is_dir() or src.suffix.lower() == ".bat":
-                continue
-            dest = BASE_DIR / rel
-            new = src.read_bytes()
-            if dest.exists() and dest.read_bytes() == new:
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp_dest = dest.with_name(dest.name + ".new")
-            tmp_dest.write_bytes(new)
-            os.replace(tmp_dest, dest)
-            changed.append(str(rel))
-    if "requirements.txt" in changed:
-        progress("Installing new packages…")
-        subprocess.run(paths.pip("install", "--disable-pip-version-check", "-r", str(BASE_DIR / "requirements.txt")),
-                       creationflags=paths.NO_WINDOW, check=False)
-    log(f"Updated to {read_version()}: {', '.join(changed) or 'no file changes'}")
-    return changed
 
 # --------------------------------------------------------------------------- #
 # Single instance: a second launch asks the running one to show its window

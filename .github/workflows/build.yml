@@ -28,6 +28,20 @@ jobs:
         shell: pwsh
         run: ./installer/build.ps1
 
+      # Installed copies only take updates signed with Mirage's update key (updater.py). With the key saved as the
+      # repository secret MIRAGE_UPDATE_KEY, this signs the app exactly as the installer ships it; without it, the
+      # release has only the installer and Mirage won't install it by itself.
+      - name: Sign the update files
+        shell: pwsh
+        env:
+          MIRAGE_UPDATE_KEY: ${{ secrets.MIRAGE_UPDATE_KEY }}
+        run: |
+          if (-not $env:MIRAGE_UPDATE_KEY) { Write-Host "No MIRAGE_UPDATE_KEY secret: skipping the signed update files"; exit 0 }
+          python release_tool.py pack build/Mirage/app installer/out/update
+          if ($LASTEXITCODE -ne 0) { throw "Signing the update failed" }
+          python release_tool.py verify installer/out/update
+          if ($LASTEXITCODE -ne 0) { throw "The signed update doesn't verify against UPDATE_KEYS in updater.py" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: Mirage-Setup
@@ -56,7 +70,9 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Mirage ${{ steps.ver.outputs.version }}
           make_latest: true
-          files: installer/out/*.exe
+          files: |
+            installer/out/*.exe
+            installer/out/update/*
           body: |
             **Download `Mirage-Setup-*.exe` below and run it.** Windows 10 or 11, 64-bit.
 

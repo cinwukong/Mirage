@@ -150,7 +150,18 @@ MESSAGING = re.compile(r"discord|whatsapp|telegram|slack|teams|signal|messenger|
                        r"gmail|instagram|twitter|x\.com|reddit|facebook|snapchat|chat", re.I)
 RISKY = re.compile(r"\b(?:send|post|publish|tweet|delete|remove|erase|discard|uninstall|buy|purchase|pay|"
                    r"payment|checkout|check out|place order|order now|subscribe|donate|transfer|confirm|"
-                   r"sign out|log out|format|empty recycle bin|reset|unfriend|block|report|submit)\b", re.I)
+                   r"sign out|log out|format|empty recycle bin|reset|unfriend|block|report|submit|"
+                   r"shut ?down|restart|power off|run as administrator)\b", re.I)
+# Windows where typing can start programs: terminals, the Run box, Start search, Registry Editor, consoles
+COMMAND_EXES = {"cmd", "powershell", "pwsh", "powershell_ise", "windowsterminal", "wt", "conhost", "openconsole",
+                "mintty", "bash", "wsl", "wslhost", "python", "py", "regedit", "mmc", "searchhost", "searchapp",
+                "searchui", "startmenuexperiencehost"}
+COMMAND_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "PseudoConsoleWindow"}
+# Windows-key shortcuts the brain may press (they move windows around). The others open Start, search, the Run box or
+# the power-user menu: ways to start any program, so the brain uses open_app instead.
+SAFE_WIN_KEYS = [{"win", "d"}, {"win", "e"}, {"win", "m"}, {"win", "shift", "m"}, {"win", "tab"}, {"win", "up"},
+                 {"win", "down"}, {"win", "left"}, {"win", "right"}, {"win", "shift", "left"}, {"win", "shift", "right"}]
+KEY_ALIASES = {"windows": "win", "cmd": "win", "control": "ctrl", "escape": "esc", "return": "enter", "del": "delete"}
 NAVIGATION = ("link", "menu item", "list item", "tab", "tree item")
 SECRET = re.compile(r"password|passcode|\bpin\b|security code|verification code|one.time code|2fa|cvv|cvc|"
                     r"card number|social security", re.I)
@@ -529,6 +540,38 @@ def parse_keys(combo: str) -> list:
     return codes
 
 
+def blocked_combo(combo: str) -> str:
+    """Why the brain may not press this shortcut ("" if it may): Windows-key shortcuts other than moving windows,
+    and Ctrl+Esc, open the Start menu, search or the Run box, where typing starts any program."""
+    parts = {KEY_ALIASES.get(p, p) for p in re.split(r"\s*\+\s*", combo.strip().lower()) if p}
+    if ("win" in parts and parts not in SAFE_WIN_KEYS) or parts == {"ctrl", "esc"}:
+        return ("Mirage doesn't use the Start menu, search or the Run box to start programs. Use open_app, or "
+                "manage_window for a window that's already open.")
+    return ""
+
+
+def command_surface() -> str:
+    """The name of the window that has the keyboard, if typing there can start programs or run commands (a terminal,
+    the Run box, Start search, Registry Editor). "" otherwise."""
+    if not WINDOWS:
+        return ""
+    h = user32.GetForegroundWindow()
+    if not h:
+        return ""
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(h, buf, 256)
+    cls = buf.value
+    try:
+        w = Win(h)
+    except Exception:
+        return "a command window" if cls in COMMAND_CLASSES else ""
+    if w.exe in COMMAND_EXES or cls in COMMAND_CLASSES:
+        return w.app or w.exe or "a command window"
+    if cls == "#32770" and w.exe == "explorer":  # the Run box and other small Windows dialogs
+        return w.title or "a Windows dialog"
+    return ""
+
+
 def keys(combo: str):
     codes = parse_keys(combo)
     down = [_key(c, 0, KEYEVENTF_EXTENDEDKEY if c in EXTENDED else 0) for c in codes]
@@ -758,6 +801,7 @@ class Hands:
         self._stop = threading.Event()
         self._own_keys_until = 0.0
         self._last_pos = None
+        self._typed_ok = (None, 0.0)  # (window, when) the user last said yes to typing into a command window
         self.seen = None         # the window the last list/look was of
         self.items = []          # its numbered controls
         self.shot = None         # (screen rect, image size, scale) of the last screenshot
@@ -812,6 +856,23 @@ class Hands:
     def _settle(self):
         time.sleep(0.15)
         self._last_pos = cursor()
+
+    def _command_ok(self) -> bool:
+        """The user said yes to typing into this same command window in the last minute."""
+        h, when = self._typed_ok
+        return bool(h) and h == user32.GetForegroundWindow() and time.time() - when < 60
+
+    def _ask(self, question) -> bool:
+        """Ask the user, then put the keyboard back on the window it was on (answering by typing to Mirage moves it)."""
+        h = user32.GetForegroundWindow() if WINDOWS else None
+        ok = self.confirm(question)
+        if ok and h and user32.GetForegroundWindow() != h:
+            try:
+                focus(Win(h))
+            except Exception:
+                pass
+        self._last_pos = cursor() if WINDOWS else None
+        return ok
 
     # ---- seeing ----
     def _target_window(self):
@@ -900,7 +961,13 @@ class Hands:
             kind, name, pw = focused_info()
             if pw or SECRET.search(name or ""):
                 return ("That's a password or code box. I never type those: ask the user to type it themselves.")
-            if "\n" in text:
+            surface = command_surface()
+            if surface and not self._command_ok():  # typing here can run commands: the user hears what and decides
+                said = re.sub(r"\s+", " ", text.replace("\n", " then Enter ")).strip()
+                if not self._ask(f"Should I type this into {surface[:40]}: {said[:90]}?"):
+                    return f"The user said no, so I didn't type into {surface}."
+                self._typed_ok = (user32.GetForegroundWindow(), time.time())
+            elif "\n" in text:
                 w = current()
                 if w and MESSAGING.search(f"{w.exe} {w.title}") and kind not in NAVIGATION:
                     if not self.confirm("Should I send that message?"):
@@ -915,8 +982,16 @@ class Hands:
         self._check()
         with _DpiAware():
             codes = parse_keys(combo)
+            why = blocked_combo(combo)
+            if why:
+                return why
             c = combo.lower().replace(" ", "")
-            if "enter" in c or "return" in c or c == "space":
+            surface = command_surface() if ("enter" in c or "return" in c) else ""
+            if surface:  # Enter in a terminal or the Run box runs whatever is there
+                if not self._command_ok():
+                    if not self._ask(f"Should I press Enter in {surface[:40]}?"):
+                        return "The user said no, so I didn't."
+            elif "enter" in c or "return" in c or c == "space":
                 kind, name, _ = focused_info()
                 w = current()
                 chat = w and "enter" in c and MESSAGING.search(f"{w.exe} {w.title}") and kind not in NAVIGATION

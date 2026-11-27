@@ -444,7 +444,7 @@ const SECTIONS = [
       C().brain === "claude_code" && custom("Claude Code", "Uses your Claude account. Install it once, then log in.", claudeCtl),
       C().brain === "claude_code" && seg("claude_model", "Model", "Fast uses the least of your Claude usage and replies quickest.",
         [["haiku", "Fast"], ["sonnet", "Balanced"], ["opus", "Smartest"]]),
-      C().brain === "claude_code" && toggle("claude_power", "Let Claude run commands and edit files", "Allows running commands and creating or editing files. When off, Claude can still search the web, read files, and use Mirage's skills."),
+      C().brain === "claude_code" && toggle("claude_power", "Let Claude run commands and edit files", "Lets Claude run commands and read, create or edit any file on this PC without asking. Only turn this on if you trust everything it reads: a web page could tell it to run something. When off, Claude can still search the web, read your notes folder and use Mirage's skills."),
       C().brain === "api" && text("anthropic_api_key", "Anthropic API key", "Pay-per-use. Get one at console.anthropic.com.", "sk-ant-…", true),
       C().brain !== "off" && custom("Try it", "Sends a short test question.", () => [btn("Test brain", () => api().test_brain()), stateEl("brainTest")]),
     ] },

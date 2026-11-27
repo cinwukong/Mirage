@@ -906,8 +906,10 @@ def open_roblox_game(cfg: dict, name: str) -> str:
     import webbrowser
     games = {k.lower(): v for k, v in cfg.get("roblox_games", {}).items()}
     key = name.lower().strip()
+    if not key:
+        return ""
     target = games.get(key)
-    if target is None:  # loose match: "open skyline" -> "skyline game"
+    if target is None and len(key) >= 3:  # loose match: "open skyline" -> "skyline game"
         target = next((v for k, v in games.items() if key in k or k in key), None)
     if target is None:
         return ""

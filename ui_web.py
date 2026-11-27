@@ -57,6 +57,14 @@ def set_startup(enabled: bool) -> bool:
     return get_startup()
 
 
+def login_command(cli) -> str:
+    """The console command that logs in to Claude Code. One string on purpose: a list would turn the quotes round the
+    path into \\", which cmd doesn't understand, and claude.exe would never start."""
+    cmd = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
+    return (f'"{cmd}" /c title Log in to Claude for Mirage && echo Log in with your Claude account, then type /exit '
+            f'and close this window. && echo. && "{cli}"')
+
+
 def open_path(path: Path):
     if M.SYSTEM == "Windows":
         os.startfile(str(path))
@@ -360,9 +368,7 @@ class Bridge:
             self._app.push("toast", "Install Claude Code first.")
             return
         if M.SYSTEM == "Windows":
-            subprocess.Popen(["cmd", "/c", "title Log in to Claude for Mirage && echo Log in with your Claude account,"
-                              " then type /exit and close this window. && echo. && \"" + str(cli) + "\""],
-                             creationflags=0x00000010)  # new console window
+            subprocess.Popen(login_command(cli), creationflags=0x00000010)  # new console window
         else:
             subprocess.Popen(["x-terminal-emulator", "-e", str(cli)])
         self._app.push("toast", "A window opened. Log in there, then come back.", )
@@ -380,8 +386,9 @@ class Bridge:
         a = self._app
 
         def work():
+            import updater
             a.push("progress", ["updState", "Checking…", "wait"])
-            latest, newer, err = M.check_for_update(M.update_repo(a.engine.cfg))
+            latest, newer, err = updater.check(updater.repo(a.engine.cfg))
             if err:
                 a.push("progress", ["updState", err, "bad"])
             elif newer:
@@ -395,8 +402,9 @@ class Bridge:
         a = self._app
 
         def work():
+            import updater
             try:
-                M.apply_update(M.update_repo(a.engine.cfg), progress=lambda m: a.push("progress", ["updState", m, "wait"]))
+                updater.apply(updater.repo(a.engine.cfg), progress=lambda m: a.push("progress", ["updState", m, "wait"]))
                 a.push("progress", ["updState", "Updated. Restarting…", "ok"])
                 time.sleep(0.8)
                 a.restart()
@@ -625,9 +633,14 @@ class App:
         args = paths.launch_args("--restarted", *(["--tray"] if getattr(self, "_hidden", self.start_hidden) else []))
         flags = 0x00000008 | 0x00000200 if M.SYSTEM == "Windows" else 0
         subprocess.Popen(args, cwd=str(M.BASE_DIR), creationflags=flags, close_fds=True)
-        self.quit()
+        self.quit()  # doesn't confirm an update just installed: that's for its own first start (updater._ours)
 
     def quit(self):
+        try:
+            import updater
+            updater.confirm()  # a normal quit counts as the update working
+        except Exception:
+            pass
         try:
             self.engine.stop()
             if self.tray:
@@ -656,8 +669,13 @@ class App:
         self.window.events.shown += self.on_shown
         self.start_tray()
         self.engine.start()
-        if self.engine.cfg.get("check_updates_on_start", True) and M.update_repo(self.engine.cfg):
+        import updater
+        if self.engine.cfg.get("check_updates_on_start", True) and updater.enabled() and updater.repo(self.engine.cfg):
             threading.Timer(6, self.bridge.check_updates).start()
+        # right after an update: still running 20 s after start means the new version works, so keep it
+        t = threading.Timer(20, updater.confirm)
+        t.daemon = True
+        t.start()
         webview.start(http_server=True, debug=False, private_mode=False,
                       storage_path=str(M.DATA_DIR / ".webview"), icon=str(ICON))
 

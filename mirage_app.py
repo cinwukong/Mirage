@@ -36,7 +36,7 @@ def selftest() -> int:
     import paths
     out, failed = [], 0
     for name in ["paths", "mirage", "skills", "speech", "local_brain", "brains", "recall", "presence", "pc", "spotify",
-                 "hologram", "ui_web", "webview", "sounddevice", "numpy", "sherpa_onnx", "PIL", "pystray", "vosk",
+                 "hologram", "ui_web", "apps", "download", "ed25519", "updater", "webview", "sounddevice", "numpy", "sherpa_onnx", "PIL", "pystray", "vosk",
                  "pyttsx3", "anthropic", "tkinter"] + (["comtypes", "comtypes.client"] if sys.platform.startswith("win") else []):
         try:
             importlib.import_module(name)
@@ -109,13 +109,37 @@ def repair(problem: str):
     root.mainloop()
 
 
+def went_back(message: str):
+    """An update didn't start, and the old version is back on disk: say so, then start the old version."""
+    _log(message)
+    try:
+        from tkinter import messagebox
+        messagebox.showwarning("Mirage", message + "\n\nThe details are in the log.")
+    except Exception:
+        pass
+    import paths
+    subprocess.Popen(paths.launch_args("--restarted"), cwd=str(BASE))
+
+
 def main():
     if "--selftest" in sys.argv:
         os._exit(selftest())
     try:
+        import updater
+        note = updater.starting()  # the first start after an update that crashed last time puts the old version back
+    except Exception as e:
+        updater, note = None, ""
+        _log(f"Update check at start failed: {e}")
+    if note:
+        went_back(note)
+        os._exit(0)
+    try:
         import webview  # noqa: F401
         import ui_web
     except ImportError as e:
+        if updater and updater.failed(f"missing part: {e}"):
+            went_back(f"The update couldn't start (a part is missing: {e}), so Mirage went back to the previous version.")
+            os._exit(0)
         repair(str(e))
         return
     try:
@@ -123,6 +147,9 @@ def main():
     except Exception:
         err = traceback.format_exc()
         _log("Fatal error:\n" + err)
+        if updater and updater.failed(err):
+            went_back("The update crashed while starting, so Mirage went back to the previous version.")
+            os._exit(0)
         try:
             from tkinter import messagebox
             messagebox.showerror("Mirage stopped", err[-1500:])

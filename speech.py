@@ -33,12 +33,18 @@ MODELS = HOME / "speech"
 CACHE_DIR = HOME / "voice_lines"
 NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 RELEASES = "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-PARTS = [  # (what, download, folder or file it unpacks to, files that must be there, size in MB)
+# (what, download, folder or file it unpacks to, files that must be there, size in MB, SHA-256 of the download).
+# sherpa-onnx replaces files under these release tags now and then, so each download is checked against the SHA-256
+# GitHub lists for the file Mirage was tested with: a changed file is refused rather than installed.
+PARTS = [
     ("voice", RELEASES + "tts-models/kokoro-multi-lang-v1_0.tar.bz2", "kokoro-multi-lang-v1_0",
-     ["model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt", "lexicon-gb-en.txt", "espeak-ng-data/phontab"], 349),
+     ["model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt", "lexicon-gb-en.txt", "espeak-ng-data/phontab"], 349,
+     "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4"),
     ("ears", RELEASES + "asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2",
-     "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"], 482),
-    ("vad", RELEASES + "asr-models/silero_vad.onnx", "silero_vad.onnx", [], 1),
+     "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8", ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"], 482,
+     "6fc4426b54aa549a0019b8a75b8dea59164e71790a37ac56a045ad57f915f714"),
+    ("vad", RELEASES + "asr-models/silero_vad.onnx", "silero_vad.onnx", [], 1,
+     "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"),
 ]
 TOTAL_MB = sum(p[4] for p in PARTS)
 
@@ -87,7 +93,7 @@ def _pip(*args):
 
 
 def part_ready(part) -> bool:
-    what, url, name, needed, mb = part
+    what, url, name, needed, mb, sha = part
     target = MODELS / name
     if not needed:
         return target.is_file() and target.stat().st_size > 1000
@@ -111,24 +117,6 @@ def installed() -> bool:
 # --------------------------------------------------------------------------- #
 # Installing
 # --------------------------------------------------------------------------- #
-def _download(url, dest, progress, label, mb):
-    tmp = dest.with_name(dest.name + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mirage"})
-    with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
-        total = int(r.headers.get("Content-Length") or mb * 1e6)
-        done, last = 0, 0.0
-        while True:
-            block = r.read(1 << 20)
-            if not block:
-                break
-            f.write(block)
-            done += len(block)
-            if time.time() - last > 0.5:
-                last = time.time()
-                progress(f"Downloading {label}: {done / 1e6:.0f} of {total / 1e6:.0f} MB")
-    os.replace(tmp, dest)
-
-
 def install(progress=lambda m: None, log=lambda m: None):
     """Install sherpa-onnx and download the voice, ears and speech detector. Returns (ok, message)."""
     free = shutil.disk_usage(HOME if HOME.exists() else Path.home()).free
@@ -149,17 +137,18 @@ def install(progress=lambda m: None, log=lambda m: None):
                 site.addsitedir(us)
         except Exception:
             pass
+    from download import fetch
     MODELS.mkdir(parents=True, exist_ok=True)
     labels = {"voice": "Mirage's voice", "ears": "Mirage's hearing", "vad": "the speech detector"}
     for part in PARTS:
-        what, url, name, needed, mb = part
+        what, url, name, needed, mb, sha = part
         if part_ready(part):
             continue
         label = labels[what]
         try:
             if url.endswith(".tar.bz2"):
                 archive = MODELS / (name + ".tar.bz2")
-                _download(url, archive, progress, label, mb)
+                fetch(url, archive, progress, label, sha256=sha)
                 progress(f"Unpacking {label}…")
                 shutil.rmtree(MODELS / name, ignore_errors=True)
                 with tarfile.open(archive, "r:bz2") as tar:
@@ -172,7 +161,7 @@ def install(progress=lambda m: None, log=lambda m: None):
                         tar.extractall(MODELS)
                 archive.unlink()
             else:
-                _download(url, MODELS / name, progress, label, mb)
+                fetch(url, MODELS / name, progress, label, sha256=sha)
         except Exception as e:
             log(f"Speech install: {what} failed: {e}")
             return False, f"Couldn't download {label}: {e}"

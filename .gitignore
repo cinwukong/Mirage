@@ -19,3 +19,6 @@ chats.db
 build/
 installer/out/
 ci/
+# the secret half of the update key (release_tool.py keygen): never commit it
+*.key
+dist/

@@ -34,22 +34,40 @@ MODELS_DIR = HOME / "models"
 WIN = sys.platform.startswith("win")
 NO_WINDOW = 0x08000000 if WIN else 0
 SERVER = ENGINE_DIR / ("llama-server.exe" if WIN else "llama-server")
-HF = "https://huggingface.co/{repo}/resolve/main/{file}"
+# Models come from a fixed commit of each Hugging Face repository and are checked against their SHA-256, so a
+# re-uploaded file can't break new installs or slip in unnoticed. Moving to newer files is a deliberate change here.
+HF = "https://huggingface.co/{repo}/resolve/{revision}/{file}"
 LLAMA_REPO = "ggml-org/llama.cpp"
-FALLBACK_TAG = "b12755"  # a build known to have Windows downloads, used if GitHub's list can't be read
+# The llama.cpp build Mirage is tested with: newer builds rename options now and then (Mirage passes several), so
+# moving to a newer one is a deliberate change too. SHA-256 values are the ones GitHub lists for the release files.
+LLAMA_TAG = "b12780"
+ENGINE_FILES = {
+    f"llama-{LLAMA_TAG}-bin-win-cuda-13.5-x64.zip": "f5bc07864b61e067cf64fe35ba583ffaf3e05d64673caec5d3e2637680ae530c",
+    "cudart-llama-bin-win-cuda-13.5-x64.zip": "c2bf4cc202bfbaaa7a0b75f5082457c3811326947bb216059b72839d844e9cba",
+    f"llama-{LLAMA_TAG}-bin-win-cuda-12.4-x64.zip": "78d9b262d0ec2f65dc6a71a998aea85d0a45dcc3826ceacdc33293ad88209f71",
+    "cudart-llama-bin-win-cuda-12.4-x64.zip": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+    f"llama-{LLAMA_TAG}-bin-win-vulkan-x64.zip": "113ab081025931f43f63e5adee78eccdecb2019dbe874a34a6a3e85e468db647",
+    f"llama-{LLAMA_TAG}-bin-win-cpu-x64.zip": "22cc5a9b647e9a947796abc1fdc5fa7c797e496dbbd9c5de0f3221474ea1907d",
+}
 
 MODELS = {
     "qwen3.5-9b": {
         "name": "Qwen3.5 9B", "blurb": "Smarter", "repo": "unsloth/Qwen3.5-9B-GGUF",
+        "revision": "3885219b6810b007914f3a7950a8d1b469d598a5",
         "file": "Qwen3.5-9B-Q4_K_M.gguf", "size": 5680522464,
+        "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
         "mmproj": "mmproj-F16.gguf", "mmproj_size": 918166080,
+        "mmproj_sha256": "f70dc3509053962b0d0d3ee8a7eacebf5d60aa560cad78254ae8698516ae029f",
         "sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
         "think": "kwargs",   # thinking is switched with chat_template_kwargs.enable_thinking
     },
     "gemma4-e4b": {
         "name": "Gemma 4 E4B", "blurb": "Lighter and faster", "repo": "unsloth/gemma-4-E4B-it-GGUF",
+        "revision": "bfc15c382204943c3a8fff0c750b94ae2364d7a3",
         "file": "gemma-4-E4B-it-Q4_K_M.gguf", "size": 4977171584,
+        "sha256": "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
         "mmproj": "mmproj-F16.gguf", "mmproj_size": 990372672,
+        "mmproj_sha256": "ddf46c21d7078e95338cfc22306b19b276a29a5ad089023449dd54d4b6170a51",
         "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
         "think": "token",    # thinking is switched on with <|think|> at the start of the system prompt
     },
@@ -100,75 +118,20 @@ def download_mb(key):
 # --------------------------------------------------------------------------- #
 # Installing
 # --------------------------------------------------------------------------- #
-def _get_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mirage", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-
-def _engine_downloads(log):
-    """[(file name, url)] for the newest llama.cpp build that fits this PC: the NVIDIA build (plus its CUDA
-    runtime) when there's an NVIDIA card, otherwise Vulkan (any graphics card) or the processor build."""
+def _engine_downloads(log=lambda m: None):
+    """[(file name, url, sha256)] of the llama.cpp build that fits this PC: the NVIDIA build (plus its CUDA runtime)
+    for the newest CUDA the driver supports, otherwise Vulkan, which runs on any graphics card (or the processor)."""
     cuda = _driver_cuda()
-    try:
-        releases = _get_json(f"https://api.github.com/repos/{LLAMA_REPO}/releases?per_page=12")
-    except Exception as e:
-        log(f"Brain install: couldn't list llama.cpp builds ({e}); using {FALLBACK_TAG}")
-        releases = []
-    for rel in releases:
-        assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
-        if cuda:
-            builds = []
-            for n in assets:
-                m = re.fullmatch(r"llama-b\d+-bin-win-cuda-(\d+)\.(\d+)-x64\.zip", n)
-                if m:
-                    ver = float(f"{m.group(1)}.{m.group(2)}")
-                    rt = f"cudart-llama-bin-win-cuda-{m.group(1)}.{m.group(2)}-x64.zip"
-                    if rt in assets and ver <= cuda + 1e-6:
-                        builds.append((ver, n, rt))
-            if builds:
-                ver, n, rt = max(builds)
-                return [(n, assets[n]), (rt, assets[rt])]
-        for pat in (r"llama-b\d+-bin-win-vulkan-x64\.zip", r"llama-b\d+-bin-win-cpu-x64\.zip"):
-            hit = next((n for n in assets if re.fullmatch(pat, n)), None)
-            if hit and not cuda:
-                return [(hit, assets[hit])]
-    base = f"https://github.com/{LLAMA_REPO}/releases/download/{FALLBACK_TAG}/"
-    if cuda:
-        names = [f"llama-{FALLBACK_TAG}-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]
+    if cuda and cuda >= 13.5 - 1e-6:
+        names = [f"llama-{LLAMA_TAG}-bin-win-cuda-13.5-x64.zip", "cudart-llama-bin-win-cuda-13.5-x64.zip"]
+    elif cuda and cuda >= 12.4 - 1e-6:
+        names = [f"llama-{LLAMA_TAG}-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]
     else:
-        names = [f"llama-{FALLBACK_TAG}-bin-win-cpu-x64.zip"]
-    return [(n, base + n) for n in names]
-
-
-def _download(url, dest, progress, label, size=None):
-    """Download with resume: a broken download carries on where it stopped next time."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
-    have = part.stat().st_size if part.exists() else 0
-    headers = {"User-Agent": "Mirage"}
-    if have:
-        headers["Range"] = f"bytes={have}-"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        if have and r.status != 206:  # the server started over
-            have = 0
-        total = size or (int(r.headers.get("Content-Length") or 0) + have)
-        done, last = have, 0.0
-        with open(part, "ab" if have else "wb") as f:
-            while True:
-                block = r.read(1 << 20)
-                if not block:
-                    break
-                f.write(block)
-                done += len(block)
-                if time.time() - last > 0.5:
-                    last = time.time()
-                    progress(f"Downloading {label}: {done / 1e9:.1f} of {total / 1e9:.1f} GB" if total > 2e9 else
-                             f"Downloading {label}: {done / 1e6:.0f} of {total / 1e6:.0f} MB")
-    if size and part.stat().st_size != size:
-        raise IOError(f"{label} downloaded incompletely ({part.stat().st_size} of {size} bytes); try again")
-    os.replace(part, dest)
+        if cuda:
+            log(f"Brain install: the NVIDIA driver only supports CUDA {cuda}; using the Vulkan build")
+        names = [f"llama-{LLAMA_TAG}-bin-win-vulkan-x64.zip"]
+    base = f"https://github.com/{LLAMA_REPO}/releases/download/{LLAMA_TAG}/"
+    return [(n, base + n, ENGINE_FILES[n]) for n in names]
 
 
 def install(key, progress=lambda m: None, log=lambda m: None):
@@ -178,15 +141,16 @@ def install(key, progress=lambda m: None, log=lambda m: None):
     free = shutil.disk_usage(HOME.parent if HOME.parent.exists() else Path.home()).free
     if free < need + 1e9:
         return False, f"Not enough free disk space: this needs about {need / 1e9:.0f} GB and there's {free / 1e9:.1f} GB free."
+    from download import fetch
     try:
         if not engine_ready():
             progress("Finding the right engine for your PC…")
             files = _engine_downloads(log)
-            log(f"Brain install: engine files {[n for n, _ in files]}")
+            log(f"Brain install: engine files {[n for n, _, _ in files]}")
             tmp = HOME / "download"
-            for name, url in files:
+            for name, url, sha in files:
                 z = tmp / name
-                _download(url, z, progress, "the brain's engine")
+                fetch(url, z, progress, "the brain's engine", sha256=sha)
                 progress("Unpacking the engine…")
                 with zipfile.ZipFile(z) as zf:
                     for info in zf.infolist():
@@ -201,11 +165,12 @@ def install(key, progress=lambda m: None, log=lambda m: None):
             if not engine_ready():
                 return False, "The engine didn't unpack properly. Try again."
         d = model_dir(key)
-        for file, size, label in ((m["file"], m["size"], m["name"]), (m["mmproj"], m["mmproj_size"], "its eyes")):
+        for file, size, sha, label in ((m["file"], m["size"], m["sha256"], m["name"]),
+                                       (m["mmproj"], m["mmproj_size"], m["mmproj_sha256"], "its eyes")):
             f = d / file
             if f.exists() and f.stat().st_size == size:
                 continue
-            _download(HF.format(repo=m["repo"], file=file), f, progress, label, size)
+            fetch(HF.format(repo=m["repo"], revision=m["revision"], file=file), f, progress, label, size, sha)
         if not model_ready(key):
             return False, "The model didn't download completely. Try again."
     except Exception as e:
