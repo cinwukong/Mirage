@@ -1,15 +1,13 @@
 """
-Mirage's updates: only signed releases, installed with a way back.
+Mirage's updates: published releases only, installed with a way back.
 
 Where updates come from
-- The newest GitHub Release of UPDATE_REPO, never a branch. A release is installed only if it carries
-  mirage-update.json signed (Ed25519) with one of UPDATE_KEYS. The private half of that key stays with whoever
-  publishes releases (release_tool.py makes the key and signs releases). The signed manifest names the app zip, its
-  size and SHA-256, so neither the manifest nor the zip can be swapped, and an older release can't be replayed.
-- With no key in UPDATE_KEYS, automatic updates are off and Mirage says so.
+- The newest GitHub Release of UPDATE_REPO, never a branch, so work in progress on main never reaches anyone.
+  A release is installed by Mirage only if it carries mirage-update.json (made by release_tool.py in the build),
+  which names the app zip, its size and SHA-256: a broken or cut-off download is never installed.
 
 How an update is installed (the installed app only; running from source, you update with git)
-1. Download, check the signature and checksum, unpack to <install folder>\\update.
+1. Download, check the checksum, unpack to <install folder>\\update.
 2. Install new packages if requirements.txt changed, then check every part of the new version loads (--selftest).
    If anything fails, nothing in app\\ has changed.
 3. Copy app\\ to app.old, then copy the new files over app\\ and remove code files the new version doesn't have.
@@ -32,14 +30,10 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-import ed25519
 import paths
 
 UPDATE_REPO = "cinwukong/Mirage"   # "owner/name"; config.json "update_repo" can point elsewhere
-# Hex Ed25519 public keys allowed to sign updates. Make one with: python release_tool.py keygen <secret key file>
-UPDATE_KEYS: list = ["a83fe03a852b4af6492c2459b6369324e65105813a3b9e744f4224afcb04a630"]  # made 2026-11-27; secret half kept by the publisher
 MANIFEST = "mirage-update.json"
-SIGNATURE = MANIFEST + ".sig"
 MAX_ZIP = 200 * 1024 * 1024
 TOKEN = ""                          # GitHub key from config.json, only needed for a private repository
 
@@ -81,16 +75,13 @@ def repo(cfg: dict) -> str:
 
 
 def enabled() -> bool:
-    """Updates can be installed from inside Mirage: a signing key is set up and this is the installed app."""
-    return bool(UPDATE_KEYS) and paths.BUNDLED
+    """Updates can be installed from inside Mirage: this is the installed app."""
+    return paths.BUNDLED
 
 
 def why_off() -> str:
     if not paths.BUNDLED:
         return "You run Mirage from source, so update it with git pull instead."
-    if not UPDATE_KEYS:
-        return ("Automatic updates are off in this copy of Mirage (it has no update key yet), so get new versions "
-                "from the Releases page on GitHub.")
     return ""
 
 
@@ -161,21 +152,14 @@ def check(repo_name: str):
         return latest, False, ""  # up to date
     if why_off():
         return latest, False, f"Version {latest} is out. " + why_off()
-    if not (_asset(rel, MANIFEST) and _asset(rel, SIGNATURE)):
-        return latest, False, (f"Version {latest} is out, but it isn't signed, so Mirage won't install it by itself. "
+    if not _asset(rel, MANIFEST):
+        return latest, False, (f"Version {latest} is out, but Mirage can't install it by itself. "
                                "Download the installer from the Releases page.")
     return latest, True, ""
 
 
-def verify_manifest(data: bytes, signature_text: str, keys=None) -> dict:
-    """The manifest as a dict, if one of the update keys signed exactly these bytes. Raises UpdateError otherwise."""
-    keys = UPDATE_KEYS if keys is None else keys
-    try:
-        sig = bytes.fromhex(signature_text.strip())
-    except ValueError:
-        raise UpdateError("The update's signature is unreadable, so it wasn't installed.")
-    if not any(ed25519.verify(bytes.fromhex(k), data, sig) for k in keys):
-        raise UpdateError("The update isn't signed with Mirage's update key, so it wasn't installed.")
+def read_manifest(data: bytes) -> dict:
+    """The manifest as a dict, if it's well formed. Raises UpdateError otherwise."""
     try:
         m = json.loads(data.decode("utf-8"))
         ok = (m.get("name") == "mirage" and isinstance(m.get("version"), str)
@@ -192,33 +176,33 @@ def verify_manifest(data: bytes, signature_text: str, keys=None) -> dict:
 # Installing
 # --------------------------------------------------------------------------- #
 def apply(repo_name: str, progress=lambda m: None) -> list:
-    """Download, check and install the newest signed release. Returns the files that changed. Raises UpdateError
+    """Download, check and install the newest release. Returns the files that changed. Raises UpdateError
     (or a network error) without having changed anything, except when putting app.old back also failed."""
     if why_off():
         raise UpdateError(why_off())
     progress("Checking the update…")
     rel = latest_release(repo_name)
-    man, sig = _asset(rel, MANIFEST), _asset(rel, SIGNATURE)
-    if not (man and sig):
-        raise UpdateError("The newest release isn't signed, so Mirage won't install it.")
-    m = verify_manifest(_download_asset(man, 64 * 1024), _download_asset(sig, 1024).decode("ascii", "replace"))
+    man = _asset(rel, MANIFEST)
+    if not man:
+        raise UpdateError("The newest release has no update files, so download the installer instead.")
+    m = read_manifest(_download_asset(man, 64 * 1024))
     current = read_version()
     if version_tuple(m["version"]) <= version_tuple(current):
         raise UpdateError("You already have this version, or a newer one.")
     if version_tuple(m["version"]) != version_tuple(release_version(rel)):
-        raise UpdateError("The release and its signed manifest name different versions, so it wasn't installed.")
+        raise UpdateError("The release and its manifest name different versions, so it wasn't installed.")
     z = _asset(rel, m["file"])
     if not z:
         raise UpdateError("The release is missing its app file.")
     progress("Downloading update…")
     blob = _download_asset(z, m["size"])
     if len(blob) != m["size"] or hashlib.sha256(blob).hexdigest() != m["sha256"]:
-        raise UpdateError("The download doesn't match the signed checksum, so it wasn't installed.")
+        raise UpdateError("The download doesn't match its checksum, so it wasn't installed.")
     progress("Checking the new version…")
     root = unpack(blob)
     try:
         if (root / "version.txt").read_text(encoding="utf-8").strip() != m["version"]:
-            raise UpdateError("The update's files don't match its signed version, so it wasn't installed.")
+            raise UpdateError("The update's files don't match its version, so it wasn't installed.")
         install_packages(root)
         selftest(root)
         progress("Installing update…")

@@ -36,7 +36,7 @@ def selftest() -> int:
     import paths
     out, failed = [], 0
     for name in ["paths", "mirage", "skills", "speech", "local_brain", "brains", "recall", "presence", "pc", "spotify",
-                 "hologram", "ui_web", "apps", "download", "ed25519", "updater", "webview", "sounddevice", "numpy", "sherpa_onnx", "PIL", "pystray", "vosk",
+                 "hologram", "ui_web", "apps", "download", "updater", "webview", "sounddevice", "numpy", "sherpa_onnx", "PIL", "pystray", "vosk",
                  "pyttsx3", "anthropic", "tkinter"] + (["comtypes", "comtypes.client"] if sys.platform.startswith("win") else []):
         try:
             importlib.import_module(name)

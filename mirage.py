@@ -38,7 +38,7 @@ LOG_PATH = DATA_DIR / "mirage.log"
 SYSTEM = platform.system()  # "Windows", "Darwin", "Linux"
 SAMPLE_RATE = 16000
 INSTANCE_PORT = 47613
-# Updates: see updater.py (signed GitHub releases only, installed with a way back).
+# Updates: see updater.py (published GitHub releases only, installed with a way back).
 
 
 def read_version() -> str:

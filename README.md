@@ -20,8 +20,8 @@ A voice assistant for Windows that runs on your own PC. Say **"Mirage"**, then w
 3. Mirage walks you through the rest: your name, your microphone, its voice and hearing (about 830 MB), and its
    brain (about 6 GB; an NVIDIA graphics card is recommended).
 
-Mirage updates itself from **Settings → App → Check for updates**, but only with releases signed with its update
-key, and it keeps the previous version to fall back on if the new one doesn't start. It installs to
+Mirage updates itself from **Settings → App → Check for updates**, from published releases only, and it keeps the
+previous version to fall back on if the new one doesn't start. It installs to
 `%LOCALAPPDATA%\Programs\Mirage` and needs no administrator rights.
 
 ## Where your things are
@@ -64,15 +64,10 @@ a private copy of Python 3.13 with every package, Mirage's code in `app\`, a sma
 then `pythonw mirage_app.py`.
 
 ### Releases and updates
-Installed copies only take updates from GitHub Releases signed with the update key, whose public half is in
-`UPDATE_KEYS` in `updater.py`. The secret half never goes in the repository: it's the repository secret
-`MIRAGE_UPDATE_KEY`, and the build signs every release with it (`mirage-update.json`, its `.sig` and the app zip
-appear next to the installer). So a release is just: bump `version.txt` and push to `main`.
-
-To sign by hand instead: `python release_tool.py pack . dist --key <secret key file>`, then upload the three files in
-`dist` to the release tagged `v<version>`. A new key: `python release_tool.py keygen <file>`, then add its public key
-to `UPDATE_KEYS` (keep the old one there too until everyone has updated). A release without the signed files can
-still be installed with the installer, but Mirage won't install it by itself.
+A release is just: bump `version.txt` and push to `main`. The build publishes the release with the installer and the
+update files installed copies use (`mirage-app-<version>.zip` and `mirage-update.json`, made by `release_tool.py`).
+Installed copies only update from published releases, never from `main` directly, and check the download against
+`mirage-update.json` before installing it.
 
 ## Credits
 Mirage stands on these, each under its own license:

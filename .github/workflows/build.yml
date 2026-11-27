@@ -28,19 +28,15 @@ jobs:
         shell: pwsh
         run: ./installer/build.ps1
 
-      # Installed copies only take updates signed with Mirage's update key (updater.py). With the key saved as the
-      # repository secret MIRAGE_UPDATE_KEY, this signs the app exactly as the installer ships it; without it, the
-      # release has only the installer and Mirage won't install it by itself.
-      - name: Sign the update files
+      # The files installed copies update from (updater.py): the app exactly as the installer ships it, plus
+      # mirage-update.json with its checksum. They go on the release next to the installer.
+      - name: Make the update files
         shell: pwsh
-        env:
-          MIRAGE_UPDATE_KEY: ${{ secrets.MIRAGE_UPDATE_KEY }}
         run: |
-          if (-not $env:MIRAGE_UPDATE_KEY) { Write-Host "No MIRAGE_UPDATE_KEY secret: skipping the signed update files"; exit 0 }
           python release_tool.py pack build/Mirage/app installer/out/update
-          if ($LASTEXITCODE -ne 0) { throw "Signing the update failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Making the update files failed" }
           python release_tool.py verify installer/out/update
-          if ($LASTEXITCODE -ne 0) { throw "The signed update doesn't verify against UPDATE_KEYS in updater.py" }
+          if ($LASTEXITCODE -ne 0) { throw "The update files don't check out" }
 
       - uses: actions/upload-artifact@v4
         with:
